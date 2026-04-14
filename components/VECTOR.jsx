@@ -637,7 +637,7 @@ const META_VECTOR_KNOWLEDGE = [
   "SYSTEM PROMPT ORDER",
   "BASE_SYSTEM + pinnedDocs + sessionMemory + HARNESS[mode] + RAG + pipe + gate + mute + rails + anchor",
   "",
-  "V2.2 INTELLIGENCE",
+  "INTELLIGENCE LAYER",
   "AutoTune: code(T=0.15) creative(T=1.15) analytical(T=0.40) conversational(T=0.75) chaotic(T=1.70)",
   "Feedback: EMA alpha=0.3, activates at 3 samples, max 50% influence at 20 samples",
   "Session Memory: auto-compress at turns 10/20/30 into protected system prompt slot",
