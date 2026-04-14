@@ -42,16 +42,24 @@ a(t)  = (α + β_p · sin(ωt)) / (1 + κ)
 b     = σ / (1 + κ)
 ```
 
-**Locked parameters:**
+**Parameters:**
 
 | Parameter | Value | Role |
 |-----------|-------|------|
-| κ | 0.444 | Hudson Constant — damping, fixed by design |
+| κ | user-selected | Damping constant — see below |
 | α | −0.25 | Mean-reversion strength |
 | β_p | 0.18 | Periodic forcing amplitude |
 | ω | 2π/12 | Forcing frequency (12-step period) |
 | σ | 0.10 | Base diffusion coefficient |
-| DAMPING | 0.6925 | = 1/(1+κ), derived from κ |
+| DAMPING | 1/(1+κ) | Derived from κ, updates automatically |
+
+**κ — Damping Constant:**
+At first run, VECTOR asks you to choose between two modes:
+
+- **κ = 0.444** — the Hudson-Perry framework constant. Empirically derived, validated across extensive testing. DAMPING = 0.6925.
+- **κ = 0.500** — standard mode. DAMPING = 0.6667.
+
+Both are fully supported. The Advanced tab lets you re-select between them or set any custom κ value. Results generated under custom κ values operate outside either validated framework.
 
 Stability is guaranteed when α < 0. Setting β = 0 yields a standard Ornstein-Uhlenbeck process. β > 0 extends it with periodic forcing, modeling the cyclical drift patterns observed in long generative sessions.
 
