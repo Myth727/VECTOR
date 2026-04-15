@@ -219,6 +219,43 @@ function sdePercentilesAtStep(paths,step) {
   const vals=paths.map(p=>p[Math.min(step,p.length-1)]).sort((a,b)=>a-b),n=vals.length;
   return {p10:vals[Math.floor(n*.10)],p90:vals[Math.floor(n*.90)]};
 }
+// ── CIR (Cox-Ingersoll-Ross) SDE Simulation ───────────────────
+// dX = κ(θ−X)dt + σ√X dW_t  — ensures X stays positive
+function simulateCIR(params,T=20,dt=0.02,nPaths=50,seed=42) {
+  const {kappa=0.444,theta=0.10,sigma=0.08}=params;
+  const nSteps=Math.ceil(T/dt),rng=makeRng(seed),paths=[];
+  for (let p=0;p<nPaths;p++) {
+    const path=new Float32Array(nSteps+1);path[0]=theta;
+    for (let i=1;i<=nSteps;i++) {
+      const x=Math.max(path[i-1],0);
+      path[i]=x+kappa*(theta-x)*dt+sigma*Math.sqrt(x)*Math.sqrt(dt)*randn(rng);
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── Heston Stochastic Volatility SDE Simulation ───────────────
+// dS/S = √V dW₁  |  dV = κ(θ−V)dt + σ√V dW₂  |  corr(dW₁,dW₂)=ρ
+function simulateHeston(params,T=20,dt=0.02,nPaths=50,seed=42) {
+  const {kappa=2.0,theta=0.04,sigma=0.30,rho=-0.70,v0=0.04}=params;
+  const nSteps=Math.ceil(T/dt),rng=makeRng(seed),paths=[];
+  for (let p=0;p<nPaths;p++) {
+    const path=new Float32Array(nSteps+1);path[0]=0;
+    let v=v0;
+    for (let i=1;i<=nSteps;i++) {
+      const z1=randn(rng),z2=randn(rng);
+      const w1=z1, w2=rho*z1+Math.sqrt(1-rho*rho)*z2;
+      const sqV=Math.sqrt(Math.max(v,0));
+      path[i]=path[i-1]+sqV*Math.sqrt(dt)*w1;
+      v=Math.max(v+kappa*(theta-v)*dt+sigma*sqV*Math.sqrt(dt)*w2,0);
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+
 
 // ── Kalman ─────────────────────────────────────────────────────
 // subtracted from the drift term via delta. When variance is high, the
@@ -2686,7 +2723,7 @@ const TuneModal = React.memo(function TuneModal() {
               <div style={{fontFamily:"Courier New,monospace",fontSize:9,color:"#C81030",
                 letterSpacing:2,marginBottom:8}}>SDE MODEL CONFIG</div>
               <div style={{display:"flex",gap:6,marginBottom:10}}>
-                {[["cir","CIR"],["heston","HESTON"]].map(([key,label])=>(
+                {[["default","DEFAULT (OU)"],["cir","CIR"],["heston","HESTON"]].map(([key,label])=>(
                   <button key={key} onClick={()=>setSdeModel(key)}
                     style={{padding:"4px 14px",borderRadius:4,cursor:"pointer",
                       fontFamily:"Courier New,monospace",fontSize:8,
@@ -3958,6 +3995,9 @@ export default function VECTOR() {
   const [domainAnchor,   setDomainAnchor]   = useState("none");
   const [sessionMemory,  setSessionMemory]  = useState(()=>loadSessionMemory());
   const [showMeta,       setShowMeta]       = useState(false);
+  const [showDemoMode,   setShowDemoMode]   = useState(false);
+  const [demoBaseline,   setDemoBaseline]   = useState(null);   // {prompt, response, score}
+  const [demoLoading,    setDemoLoading]    = useState(false);
   const [showTools,      setShowTools]      = useState(false);
   const [toolsTab,       setToolsTab]       = useState("calc");
   const [calcVar,        setCalcVar]        = useState(0.15);
@@ -4261,8 +4301,12 @@ export default function VECTOR() {
     beta_p:sdeBetaOn?sdeBetaVal:SDE_PARAMS.beta_p,
     sigma:sdeSigmaOn?sdeSigmaVal:SDE_PARAMS.sigma,
     mtjEnabled,mtjDelta,
-  }),[sdeAlphaOn,sdeAlphaVal,sdeBetaOn,sdeBetaVal,sdeSigmaOn,sdeSigmaVal]);
-  const livePaths = useMemo(()=>simulateSDE(liveSDEOverride,20,.02,nPaths,42),[nPaths,sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn]);
+  }),[sdeAlphaOn,sdeAlphaVal,sdeBetaOn,sdeBetaVal,sdeSigmaOn,sdeSigmaVal,mtjEnabled,mtjDelta]);
+  const livePaths = useMemo(()=>{
+    if (sdeModel==="cir")    return simulateCIR({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
+    if (sdeModel==="heston") return simulateHeston({kappa:hestonKappa,theta:hestonTheta,sigma:hestonSigma,rho:hestonRho,v0:hestonV0},20,.02,nPaths,42);
+    return simulateSDE(liveSDEOverride,20,.02,nPaths,42);
+  },[sdeModel,nPaths,liveSDEOverride,cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0]);
   // R3 fix: memoized — null customMutePhrases returned new MUTE_PHRASES ref every render,
   // silently invalidating sendMessage useCallback on every render.
   const activeMutePhrases = useMemo(()=>customMutePhrases??MUTE_PHRASES,[customMutePhrases]);
@@ -5222,6 +5266,28 @@ export default function VECTOR() {
    featGate,featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,
    featIntegrityFloor,integrityThreshold]);
 
+
+  const sendDemoBaseline = useCallback(async(promptText)=>{
+    if (!promptText||!apiKey.trim()||demoLoading) return;
+    setDemoLoading(true);
+    setDemoBaseline(null);
+    try {
+      const resp = await fetch(API_ENDPOINT,{method:"POST",
+        headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01",
+          "x-api-key":apiKey.trim(),...(_isVercel?{"x-vector-provider":provider}:{})},
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:mathMaxTokens??NORMAL_MAX_TOKENS,
+          system:"You are a precise technical assistant. Answer the question asked.",
+          messages:[{role:"user",content:promptText}]})});
+      const data=await resp.json();
+      const reply=((data.content||[]).map(c=>c.text||"")).join("").trim();
+      const baseScore=computeCoherence(reply,messages);
+      setDemoBaseline({prompt:promptText,response:reply,score:baseScore});
+    } catch(e) {
+      setDemoBaseline({prompt:promptText,response:"Error: "+e.message,score:null});
+    }
+    setDemoLoading(false);
+  },[apiKey,demoLoading,messages,provider,mathMaxTokens]);
+
   return (
     <TuneCtx.Provider value={tuneCtxValue}>
     <SessionCtx.Provider value={sessionCtxValue}>
@@ -5377,6 +5443,10 @@ export default function VECTOR() {
           onClick={()=>setShowMeta(p=>!p)}>
           {showMeta?"HIDE META":"META"}
         </button>
+        <button style={{...S.logBtn,borderColor:"#17804044",color:showDemoMode?"#178040":"#1A4A2A"}}
+          onClick={()=>setShowDemoMode(p=>!p)}>
+          {showDemoMode?"HIDE DEMO":"DEMO"}
+        </button>
         <button style={{...S.logBtn,borderColor:"#0A787844",color:showTools?"#0A7878":"#1A4A4A"}}
           onClick={()=>setShowTools(p=>!p)}>
           {showTools?"HIDE TOOLS":"TOOLS"}
@@ -5530,6 +5600,80 @@ export default function VECTOR() {
               }}>
               {metaLoading?"...":"SEND"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* DEMO — Before/After Comparison Panel */}
+      {showDemoMode&&(
+        <div style={{margin:"6px 20px 0",border:"1px solid #178040",borderRadius:5,
+          background:"#FFFFFF",boxShadow:"0 2px 8px rgba(23,128,64,0.10)"}}>
+          <div style={{padding:"7px 10px",borderBottom:"2px solid #A8D8B8",
+            background:"#EEFBF4",borderRadius:"5px 5px 0 0",
+            display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+            <div style={{fontFamily:"Courier New,monospace",fontSize:8,color:"#0A6030",
+              letterSpacing:2,fontWeight:"bold"}}>
+              DEMO — BEFORE / AFTER COMPARISON
+            </div>
+            <span style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#178040",opacity:.7}}>
+              Same prompt · No harness · Side by side
+            </span>
+          </div>
+          <div style={{padding:"10px 14px"}}>
+            <div style={{fontFamily:"Courier New,monospace",fontSize:8,color:"#2E5070",marginBottom:8}}>
+              Run the last user message without VECTOR correction to compare outputs.
+            </div>
+            <button
+              onClick={()=>{
+                const lastUser=messages.filter(m=>m.role==="user").slice(-1)[0];
+                if(lastUser){
+                  const txt=typeof lastUser.content==="string"?lastUser.content
+                    :lastUser.content.filter(b=>b.type==="text").map(b=>b.text).join(" ");
+                  sendDemoBaseline(txt);
+                }
+              }}
+              disabled={demoLoading||!messages.some(m=>m.role==="user")}
+              style={{padding:"6px 14px",background:demoLoading?"#D0E8D8":"#178040",
+                border:"none",borderRadius:4,color:"#FFFFFF",cursor:"pointer",
+                fontFamily:"Courier New,monospace",fontSize:8,letterSpacing:1,
+                opacity:demoLoading||!messages.some(m=>m.role==="user")?0.5:1}}>
+              {demoLoading?"RUNNING BASELINE...":"RUN BASELINE (NO HARNESS)"}
+            </button>
+            {demoBaseline&&(
+              <div style={{marginTop:12,display:"flex",gap:10}}>
+                {/* WITH VECTOR */}
+                <div style={{flex:1,border:"1px solid #0A787840",borderRadius:4,padding:10,background:"#F0FBFA"}}>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#0A7878",
+                    letterSpacing:2,marginBottom:6,fontWeight:"bold"}}>WITH VECTOR</div>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#178040",marginBottom:6}}>
+                    C-Score: {coherenceData.length>0?coherenceData[coherenceData.length-1].raw.toFixed(3):"—"}
+                    {" · Kalman: "}{coherenceData.length>0?coherenceData[coherenceData.length-1].kalman.toFixed(3):"—"}
+                  </div>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:8,color:"#0E1C2A",
+                    lineHeight:1.6,maxHeight:180,overflowY:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+                    {messages.filter(m=>m.role==="assistant").slice(-1)[0]
+                      ?((m=>typeof m.content==="string"?m.content:m.content.filter(b=>b.type==="text").map(b=>b.text).join(""))(messages.filter(m=>m.role==="assistant").slice(-1)[0]))
+                      :"No response yet"}
+                  </div>
+                </div>
+                {/* BASELINE */}
+                <div style={{flex:1,border:"1px solid #C8103040",borderRadius:4,padding:10,background:"#FFF8F8"}}>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#C81030",
+                    letterSpacing:2,marginBottom:6,fontWeight:"bold"}}>BASELINE (NO HARNESS)</div>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#9A5C08",marginBottom:6}}>
+                    C-Score: {demoBaseline.score!=null?demoBaseline.score.toFixed(3):"—"}
+                    {coherenceData.length>0&&demoBaseline.score!=null?(
+                      " · Δ: "+(coherenceData[coherenceData.length-1].raw-demoBaseline.score>0?"+":" ")+
+                      (coherenceData[coherenceData.length-1].raw-demoBaseline.score).toFixed(3)
+                    ):""}
+                  </div>
+                  <div style={{fontFamily:"Courier New,monospace",fontSize:8,color:"#0E1C2A",
+                    lineHeight:1.6,maxHeight:180,overflowY:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+                    {demoBaseline.response}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -5997,6 +6141,16 @@ export default function VECTOR() {
                         <button key={v} onClick={()=>{
                           setMsgRatings(r=>({...r,[i]:v}));
                           if(lastAutoTune){const nf=processFeedback(feedbackState,lastAutoTune.type,v,lastAutoTune.params);setFeedbackState(nf);saveFeedbackState(nf);}
+                          // RLHF→SDE bridge: -1 rating on a drifted turn with active harness
+                          // nudges SDE alpha (mean reversion) stronger for this session.
+                          // κ=0.444 is never touched — only sigma adaptation path used.
+                          if(v===-1&&cdata&&cdata.harnessActive&&cdata.raw<0.65&&adaptiveSigmaOn){
+                            const rlhfTarget=Math.min(adaptedSigma*1.08,0.40);
+                            setAdaptedSigma(rlhfTarget);
+                            setEventLog(p=>[...p,{timestamp:new Date().toISOString(),turn:ti+1,
+                              type:"rlhf_sde_adapt",
+                              note:"RLHF -1 on drifted turn — σ nudged to "+rlhfTarget.toFixed(4)}]);
+                          }
                         }} style={{padding:"1px 6px",cursor:"pointer",borderRadius:8,fontSize:10,
                           background:thumbRating===v?"#0A787822":"transparent",
                           border:thumbRating===v?"1px solid #0A7878":"1px solid #1A305060",
