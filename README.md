@@ -270,7 +270,33 @@ ai/knowledge/
 
 ---
 
+## Meta-Harness Integration
+
+VECTOR's Reflexive Analysis and offline optimization tools are adapted from the **Meta-Harness** framework by the Stanford IRIS Lab.
+
+> Lee, Nair, Zhang, Lee, Khattab & Finn (2026). *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052. https://arxiv.org/abs/2603.28052
+
+**What we borrowed:**
+- 3-candidate structured proposal format (exploitation + exploration)
+- Exploitation/exploration axis taxonomy (A–F)
+- Anti-parameter-tuning rules (parameter sweeps almost always regress — change mechanisms)
+- Frontier tracking (`vector_frontier` localStorage key — best config per context type)
+- Evolution summary JSONL format (compatible with Meta-Harness tooling)
+- Offline harness pattern for `tools/vector_harness.py` and `tools/meta_loop.py`
+
+**What's different:**
+- Meta-Harness is an offline optimizer that searches over static harness configurations.  
+  VECTOR is a live real-time controller that runs turn-by-turn during active sessions.
+- Meta-Harness uses Python + Claude Code. VECTOR runs entirely in the browser.
+- VECTOR's mathematical engine (SDE/GARCH/Kalman/PID) has no equivalent in Meta-Harness.
+
+The two are complementary: Meta-Harness can auto-optimize VECTOR's preset parameters offline, then feed the winning config back into live sessions.
+
+---
+
 ## Citation
+
+
 
 ```
 Perry, D. & Hudson, D. (2026). VECTOR: Volatility-Sensitive Correction Engine.
