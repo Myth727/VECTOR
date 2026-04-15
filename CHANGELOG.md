@@ -13,6 +13,22 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.5.5] — 2026-04-15
+
+### Bug Fix
+- **Langevin and Integrity Floor toggles still broken** — root cause was deeper than previous fixes. `mtjEnabled`, `setMtjEnabled`, `mtjDelta`, `setMtjDelta`, `featIntegrityFloor`, `setFeatIntegrityFloor`, `showIntegrityFloor`, `setShowIntegrityFloor`, and `integrityThreshold` were completely absent from the `tuneCtxValue` object. They existed in the deps array (harmless) and in the destructure (reads undefined), but were never actually provided by the context. Full systematic audit confirmed zero missing setters in TuneModal after this fix.
+
+---
+
+## [1.5.4] — 2026-04-15
+
+### Bug Fixes
+- **ACCEPT button completely broken** — `setShowDisclaimer` and `setShowGuide` were passed as props to `DisclaimerModal` at the call site but missing from the component's destructured signature. Clicking ACCEPT called `undefined()`, silently failed, modal stayed open forever. Fixed.
+- **SKIP button same issue** — same root cause. Fixed in same pass.
+- **Emergency CLEAR STORAGE button added** — small red button in disclaimer modal footer. Wipes all `vector_*` localStorage keys and reloads. Means users can always escape a broken/corrupted state without needing browser dev tools. This is the correct solution to the "can't click anything" situation.
+
+---
+
 ## [1.5.3] — 2026-04-15
 
 ### Deep Audit — Full Systematic Fix Pass
