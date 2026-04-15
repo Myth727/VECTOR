@@ -764,13 +764,98 @@ function _storageDel(key){
 }
 
 function saveFeedbackState(s){try{_storageSet("vector_fb",JSON.stringify(s));}catch(e){}}
-function loadFeedbackState(){try{const s=_storageGet("vector_fb");return s?JSON.parse(s):createFeedbackState();}catch(e){return createFeedbackState();}}
-function buildReflexivePrompt(coherenceData,activePreset){
-  const avg=coherenceData.length?coherenceData.reduce((s,d)=>s+d.raw,0)/coherenceData.length:0;
-  const scores=coherenceData.map(d=>d.raw.toFixed(3)).join(", ");
-  const drifts=coherenceData.filter(d=>d.harnessActive).length;
-  return "Analyze this VECTOR session. Return ONLY valid JSON (no markdown, no backticks).\n\nSESSION:\n- Preset: "+activePreset+"\n- Turns: "+coherenceData.length+"\n- Avg coherence: "+avg.toFixed(3)+"\n- Scores: ["+scores+"]\n- Drift events: "+drifts+"\n\nFormat: {\"suggestions\":[{\"type\":\"preset_change\",\"description\":\"...\",\"action\":\"...\",\"priority\":\"high\"}],\"summary\":\"1-2 sentences\"}";
+
+// ── Meta-Harness Frontier Tracker ─────────────────────────────
+// Tracks best C-score per context type — adapted from frontier_val.json pattern.
+// Reference: Lee et al. (2026) Meta-Harness. Stanford IRIS Lab. arXiv:2603.28052.
+function loadVectorFrontier(){
+  try{const s=_storageGet("vector_frontier");return s?JSON.parse(s):{};}
+  catch(e){return{};}
 }
+function saveVectorFrontier(f){try{_storageSet("vector_frontier",JSON.stringify(f));}catch(e){}}
+function loadEvolutionHistory(){
+  try{const s=_storageGet("vector_evolution");return s?JSON.parse(s):[];}
+  catch(e){return[];}
+}
+function saveEvolutionHistory(h){try{_storageSet("vector_evolution",JSON.stringify(h.slice(-50)));}catch(e){}}
+
+function updateFrontier(frontier, contextType, avgC, preset, modules) {
+  const current = frontier[contextType] || {avgC:0};
+  if (avgC > current.avgC) {
+    return {...frontier, [contextType]: {
+      avgC, preset, modules: modules||[],
+      timestamp: Date.now(),
+      updatedAt: new Date().toISOString()
+    }};
+  }
+  return frontier;
+}
+function loadFeedbackState(){try{const s=_storageGet("vector_fb");return s?JSON.parse(s):createFeedbackState();}catch(e){return createFeedbackState();}}
+// ── Meta-Harness inspired structured evolution ────────────────────────────
+// Adapted from Lee, Nair, Zhang, et al. (2026) Meta-Harness: End-to-End
+// Optimization of Model Harnesses. Stanford IRIS Lab. arXiv:2603.28052.
+// Key adaptations: 3-candidate structure, exploitation/exploration axis,
+// hypothesis-driven proposals, anti-parameter-tuning enforcement,
+// frontier tracking — ported to VECTOR live in-browser context.
+//
+// VECTOR evolution axes (adapted from Meta-Harness component tags):
+// A=ScoringMechanism  B=HarnessThresholds  C=InjectionStrategy
+// D=SignalDetection   E=NoiseModel         F=KalmanVariant
+
+function buildReflexivePrompt(coherenceData, activePreset, evolutionHistory) {
+  const avg = coherenceData.length
+    ? coherenceData.reduce((s,d)=>s+d.raw,0)/coherenceData.length : 0;
+  const drifts = coherenceData.filter(d=>d.harnessActive).length;
+  const hSigs  = coherenceData.filter(d=>d.hallucinationFlag).length;
+  const bSigs  = coherenceData.filter(d=>d.behavioralFlag).length;
+  const recentScores = coherenceData.slice(-6).map(d=>d.raw.toFixed(3)).join(", ");
+  const trend = coherenceData.length>=3
+    ? (coherenceData.slice(-3).reduce((s,d)=>s+d.raw,0)/3 > avg ? "IMPROVING" : "DECLINING")
+    : "INSUFFICIENT_DATA";
+  const historyStr = evolutionHistory&&evolutionHistory.length
+    ? "\n\nEVOLUTION HISTORY (avoid repeating same axis 3+ times):\n"+
+      evolutionHistory.slice(-5).map(h=>
+        "iter="+h.iteration+" preset="+h.preset+" avg_c="+(h.avgC||0).toFixed(3)+
+        " delta="+(h.delta>=0?"+":""+(h.delta||0).toFixed(3))+
+        " axis="+h.axis+" hyp=\""+h.hypothesis+"\" outcome="+h.outcome
+      ).join("\n")
+    : "";
+  const iteration = evolutionHistory ? evolutionHistory.length+1 : 1;
+  return "You are analyzing a VECTOR session to propose harness improvements.\n"+
+    "Return ONLY valid JSON. No markdown, no backticks, no preamble.\n\n"+
+    "CRITICAL RULES (Meta-Harness anti-parameter-tuning):\n"+
+    "1. Propose EXACTLY 3 candidates.\n"+
+    "2. Each candidate must change a FUNDAMENTAL MECHANISM, not just tune numbers.\n"+
+    "3. Parameter-only changes almost always regress or tie. AVOID THEM.\n"+
+    "4. Mix exploitation (refine what works) and exploration (try genuinely new approach).\n"+
+    "5. Each hypothesis must be FALSIFIABLE.\n"+
+    "6. If history shows same axis 3+ times, pick different axes.\n\n"+
+    "VECTOR AXES: A=ScoringMechanism B=HarnessThresholds C=InjectionStrategy D=SignalDetection E=NoiseModel F=KalmanVariant\n\n"+
+    "Good changes: switch scoring metric, enable EKF/PF/Lévy, change SDE model, modify signal detection logic.\n"+
+    "Bad changes: adjust GARCH omega by 0.001, change varCaution from 0.120 to 0.115.\n\n"+
+    "SESSION:\nPreset: "+activePreset+"\nTurns: "+coherenceData.length+
+    "\nAvg C: "+avg.toFixed(4)+"\nRecent: ["+recentScores+"]"+
+    "\nTrend: "+trend+"\nDrifts: "+drifts+" H-sigs: "+hSigs+" B-sigs: "+bSigs+
+    historyStr+
+    "\n\nReturn exactly:\n"+
+    JSON.stringify({
+      iteration:"<N>",
+      summary:"<2 sentences: what went wrong and the opportunity>",
+      candidates:[{
+        name:"<snake_case>",
+        preset:"<DEFAULT|TECHNICAL|CREATIVE|RESEARCH|MEDICAL|CIRCUIT|CUSTOM>",
+        hypothesis:"<falsifiable claim>",
+        axis:"<A|B|C|D|E|F>",
+        type:"<exploitation|exploration>",
+        mechanism_change:"<what fundamentally changes>",
+        enable_modules:["<ekf|particle|levy|cir|heston — or empty>"],
+        predicted_delta:"<float>",
+        priority:"<high|medium|low>"
+      }],
+      frontier_note:"<best known config observation>"
+    },null,2);
+}
+
 const KNOWLEDGE_ANCHORS={
   none:{label:"General",terms:[]},
   medical:{label:"Medical / Clinical",terms:["diagnosis","etiology","pathophysiology","contraindication","pharmacokinetics","differential","prognosis","protocol","efficacy","adverse","symptom","clinical","evidence-based","randomized","placebo","dose","mechanism","indication","comorbidity"]},
@@ -4301,6 +4386,8 @@ export default function VECTOR() {
   const [useParticle,     setUseParticle]     = useState(false);  // Particle Filter
   const [particleState,   setParticleState]   = useState([]);     // particle distribution
   const [berryPhase,      setBerryPhase]      = useState(null);
+  const [evolutionHistory,setEvolutionHistory]= useState([]);  // Meta-Harness frontier tracker
+  const [vectorFrontier,  setVectorFrontier]  = useState({});  // best C-score per context type
   const [sheTorque,       setSHETorque]       = useState(null);
   const [mtjDelta,        setMtjDelta]        = useState(MTJ_DELTA_DEFAULT);
   // Post-audit custom threshold
@@ -4436,6 +4523,13 @@ export default function VECTOR() {
   // ──: Load saved key + provider from localStorage on mount ──
   useEffect(()=>{
     try {
+      // Load Meta-Harness frontier and evolution history
+      try {
+        const f = loadVectorFrontier();
+        if (Object.keys(f).length) setVectorFrontier(f);
+        const ev = loadEvolutionHistory();
+        if (ev.length) setEvolutionHistory(ev);
+      } catch(e) {}
       const savedKey      = _storageGet("vector_api_key");
       const savedProvider = _storageGet("vector_provider");
       if (savedKey)      { setApiKey(savedKey);       setKeySaved(true); }
@@ -5177,6 +5271,22 @@ export default function VECTOR() {
         if (nc>=(cfg.driftEscalateDeep??5)&&harnessMode==="moderate") newMode="deep";
         if (nc>=(cfg.driftEscalateExtreme??8)&&harnessMode==="deep")  newMode="extreme";
         setHarnessMode(newMode);
+        // Meta-Harness: log delta on drift (evolution evidence)
+        const evolutionEntry = {
+          iteration: evolutionHistory.length+1,
+          timestamp: now,
+          turn,
+          preset: activePreset,
+          avgC: coherenceData.length?(coherenceData.reduce((s,d)=>s+d.raw,0)/coherenceData.length):rawScore,
+          delta: coherenceData.length>=2?(rawScore-coherenceData[coherenceData.length-1].raw):0,
+          axis: "B",
+          hypothesis: "drift_detected",
+          outcome: "drift_event",
+          components: ["harness_escalation"]
+        };
+        const newEvHist = [...evolutionHistory, evolutionEntry];
+        setEvolutionHistory(newEvHist);
+        saveEvolutionHistory(newEvHist);
         setEventLog(p=>[...p,{timestamp:now,turn,type:"drift_event",
           coherence_score:rawScore,kalman_x:newKalman.x,new_mode:newMode}]);
       } else if (rawScore>.85&&driftCount>0) {
@@ -5414,7 +5524,8 @@ export default function VECTOR() {
      pinnedDocs,sessionMemory,domainAnchor,
      autoTuneEnabled,feedbackState,provider,
      kalmanHistory,featIntegrityFloor,integrityThreshold,
-     useEKF,useParticle,particleState]);
+     useEKF,useParticle,particleState,
+     evolutionHistory,vectorFrontier,lastAutoTune]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
 
@@ -5593,6 +5704,7 @@ export default function VECTOR() {
     useEKF,setUseEKF,useParticle,setUseParticle,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
     berryPhase,sheTorque,
+    evolutionHistory,setEvolutionHistory,vectorFrontier,setVectorFrontier,
   }),[showTuning,activePreset,customConfig,userKappa,userAnchor,hudsonMode,
       featKalman,featGARCH,featSDE,featRAG,featPipe,featMute,featGate,
       featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,postAuditThresh,
@@ -5608,7 +5720,8 @@ export default function VECTOR() {
       showIntegrityFloor,featIntegrityFloor,integrityThreshold,integrityBreachCount,
       userRailsEnabled,userCustomRails,sdeModel,
       cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
-      useEKF,useParticle,berryPhase,sheTorque]);
+      useEKF,useParticle,berryPhase,sheTorque,
+      evolutionHistory,vectorFrontier]);
 
   const sessionCtxValue = useMemo(()=>({
     exportContent,setExportContent,exportCopied,setExportCopied,
@@ -5892,11 +6005,34 @@ export default function VECTOR() {
               try{
                 const res=await fetch(API_ENDPOINT,{method:"POST",
                   headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey.trim(),...(_isVercel?{"x-vector-provider":provider}:{})},
-                  body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:600,system:"Return only valid JSON. No markdown.",messages:[{role:"user",content:buildReflexivePrompt(coherenceData,activePreset)}]})});
+                  body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:600,system:"Return only valid JSON. No markdown.",messages:[{role:"user",content:buildReflexivePrompt(coherenceData,activePreset,evolutionHistory)}]})});
                 const data=await res.json();
                 const raw=(data.content||[]).map(c=>c.text||"").join("");
-                setReflexiveResult(JSON.parse(raw.replace(/```json|```/g,"").trim()));
-              }catch(e){setReflexiveResult({error:"Analysis failed.",suggestions:[]});}
+                const parsed=JSON.parse(raw.replace(/```json|```/g,"").trim());
+                setReflexiveResult(parsed);
+                // Meta-Harness: record candidates in evolution history
+                if(parsed.candidates&&parsed.candidates.length){
+                  const baseIter=evolutionHistory.length;
+                  const entries=parsed.candidates.map((c,i)=>({
+                    iteration:baseIter+i+1,timestamp:new Date().toISOString(),
+                    preset:c.preset||activePreset,
+                    avgC:coherenceData.length?coherenceData.reduce((s,d)=>s+d.raw,0)/coherenceData.length:0,
+                    delta:parseFloat(c.predicted_delta)||0,
+                    axis:c.axis||"B",hypothesis:c.hypothesis||"",outcome:"proposed",
+                    components:c.components||[],type:c.type||"exploitation",
+                    mechanism:c.mechanism_change||""
+                  }));
+                  const newEv=[...evolutionHistory,...entries];
+                  setEvolutionHistory(newEv);saveEvolutionHistory(newEv);
+                  // Update frontier with current session's best config
+                  if(coherenceData.length>=5){
+                    const ctx=lastAutoTune?.type||"conversational";
+                    const avgC=coherenceData.reduce((s,d)=>s+d.raw,0)/coherenceData.length;
+                    const nf=updateFrontier(vectorFrontier,ctx,avgC,activePreset,[]);
+                    if(nf!==vectorFrontier){setVectorFrontier(nf);saveVectorFrontier(nf);}
+                  }
+                }
+              }catch(e){setReflexiveResult({error:"Analysis failed — "+e.message,suggestions:[]});}
               finally{setReflexiveLoading(false);}
             }}
             style={{width:"100%",padding:"6px",fontFamily:"Courier New,monospace",fontSize:8,
@@ -5915,15 +6051,35 @@ export default function VECTOR() {
             ?<div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#C81030"}}>{reflexiveResult.error}</div>
             :(<div>
                 {reflexiveResult.summary&&<div style={{fontFamily:"Courier New,monospace",fontSize:7.5,color:"#C8D8E8",lineHeight:1.6,marginBottom:6}}>{reflexiveResult.summary}</div>}
-                {(reflexiveResult.suggestions||[]).map((s,idx)=>(
-                  <div key={idx} style={{marginBottom:5,padding:"5px 8px",borderRadius:3,
-                    background:s.priority==="high"?"#200808":"#080F08",
-                    border:"1px solid "+(s.priority==="high"?"#C8103030":"#17804030")}}>
-                    <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:s.priority==="high"?"#C81030":"#178040",letterSpacing:1,marginBottom:2}}>
-                      {(s.priority||"").toUpperCase()+" · "+(s.type||"").replace(/_/g," ").toUpperCase()}
+                {/* Meta-Harness structured candidates */}
+                {(reflexiveResult.candidates||reflexiveResult.suggestions||[]).map((c,idx)=>(
+                  <div key={idx} style={{marginBottom:6,padding:"6px 8px",borderRadius:3,
+                    background:c.type==="exploration"?"#080820":"#080F08",
+                    border:"1px solid "+(c.priority==="high"?"#C8103030":c.type==="exploration"?"#4848B830":"#17804030")}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                      <div style={{fontFamily:"Courier New,monospace",fontSize:7,
+                        color:c.priority==="high"?"#C81030":c.type==="exploration"?"#4848B8":"#178040",
+                        letterSpacing:1}}>
+                        {(c.type||"").toUpperCase()+" · AXIS-"+(c.axis||"?")+" · "+(c.priority||"medium").toUpperCase()}
+                      </div>
+                      {c.predicted_delta!=null&&<div style={{fontFamily:"Courier New,monospace",fontSize:7,
+                        color:parseFloat(c.predicted_delta)>=0?"#178040":"#C81030"}}>
+                        {parseFloat(c.predicted_delta)>=0?"+" :""}{parseFloat(c.predicted_delta||0).toFixed(3)}
+                      </div>}
                     </div>
-                    <div style={{fontFamily:"Courier New,monospace",fontSize:7.5,color:"#C8D8E8",lineHeight:1.4}}>{s.description}</div>
-                    {s.action&&<div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#0A7878",marginTop:2}}>{"→ "+s.action}</div>}
+                    <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#8090A0",marginBottom:2}}>
+                      {c.name||""}{c.preset?" → "+c.preset:""}
+                    </div>
+                    <div style={{fontFamily:"Courier New,monospace",fontSize:7.5,color:"#C8D8E8",lineHeight:1.4,marginBottom:2}}>
+                      {c.hypothesis||c.description||""}
+                    </div>
+                    {c.mechanism_change&&<div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#0A7878",marginTop:2}}>
+                      {"⟳ "+c.mechanism_change}
+                    </div>}
+                    {c.action&&<div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#0A7878",marginTop:2}}>{"→ "+c.action}</div>}
+                    {(c.enable_modules||[]).length>0&&<div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#4848B8",marginTop:2}}>
+                      {"⚙ "+c.enable_modules.join(", ")}
+                    </div>}
                   </div>
                 ))}
                 <button onClick={()=>setReflexiveResult(null)} style={{marginTop:4,padding:"2px 8px",fontFamily:"Courier New,monospace",fontSize:7,cursor:"pointer",background:"none",border:"1px solid #1A3050",borderRadius:3,color:"#2E5070"}}>DISMISS</button>
@@ -6300,6 +6456,23 @@ export default function VECTOR() {
                     const a=document.createElement("a");
                     a.href=URL.createObjectURL(new Blob([jsonl],{type:"application/jsonl"}));
                     a.download="vector_events_"+Date.now()+".jsonl";a.click();
+                  },
+                },
+                {
+                  label:"JSONL — Evolution Summary",
+                  desc:"Meta-Harness compatible evolution history + frontier (arXiv:2603.28052)",
+                  onClick:()=>{
+                    const header=[
+                      "# VECTOR Evolution Summary — Meta-Harness Format",
+                      "# Reference: Lee et al. (2026) arXiv:2603.28052",
+                      "# github.com/Myth727/VECTOR",
+                      ""
+                    ].join("\n");
+                    const lines=evolutionHistory.map(e=>JSON.stringify(e)).join("\n");
+                    const frontierStr="\n\n# FRONTIER (best config per context type)\n"+JSON.stringify(vectorFrontier,null,2);
+                    const blob=new Blob([header+lines+frontierStr],{type:"text/plain"});
+                    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+                    a.download="vector_evolution_"+Date.now()+".jsonl";a.click();
                   },
                 },
                 {
