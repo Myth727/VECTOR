@@ -140,6 +140,8 @@ dW_t = b · √dt · z · η
 | **Session Memory** | Auto-compresses history at turns 10/20/30. Solves long-session context loss. |
 | **META Panel** | Second analysis chat with full VECTOR architecture + live session data embedded |
 | **Quick Tools Drawer** | CALC (SDE/GARCH calculator), VERIFY (15 live session checks), EXPORT (CSV/JSONL/TXT) |
+| **Demo Mode** | Run any prompt with and without VECTOR correction side by side. C-score differential shows exactly what the harness changes. |
+| **RLHF→SDE Bridge** | -1 ratings on drifted turns feed back into the SDE sigma parameter — the engine learns from confirmed correction failures. |
 
 ---
 
@@ -196,7 +198,7 @@ dW_t = b · √dt · z · η
 
 ## Advanced / Experimental (opt-in, consent required)
 
-- Alt SDE Models (CIR, Heston stochastic volatility)
+- Alt SDE Models (CIR, Heston stochastic volatility) — fully implemented, selectable in Advanced tab
 - Custom behavioral rails
 - Stability convergence panel (RESONANCE_ANCHOR = 623.81 Hz)
 - Edit constants (κ, ε, GARCH params)
