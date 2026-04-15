@@ -192,7 +192,7 @@ function langnevinNoise(rng, delta) {
 
 function simulateSDE(params,T,dt=0.02,nPaths=50,seed=42) {
   const {alpha,beta_p,omega,sigma,kappa,delta=0,jumpIntensity=0,jumpMagnitude=0,
-         mtjEnabled=true,mtjDelta=MTJ_DELTA_DEFAULT}=params;
+         mtjEnabled=true,mtjDelta=MTJ_DELTA_DEFAULT,levyEnabled=false,levyAlpha=LEVY_ALPHA_DEFAULT}=params;
   const lam=1/(1+kappa),nSteps=Math.ceil(T/dt),rng=makeRng(seed),paths=[];
   let runVar=0; // running variance estimate for GARCH-in-Mean
   const jumpProb=1-Math.exp(-(jumpIntensity||0)*dt);
@@ -203,7 +203,10 @@ function simulateSDE(params,T,dt=0.02,nPaths=50,seed=42) {
       // GARCH-in-Mean: subtract delta*variance from drift — higher variance → stronger reversion
       const a_t=lam*(alpha+beta_p*Math.sin(omega*t)-(delta||0)*runVar);
       const b=lam*sigma;
-      const noise=b*Math.sqrt(dt)*(mtjEnabled?langnevinNoise(rng,mtjDelta):randn(rng));
+      const noise=b*Math.sqrt(dt)*(
+        levyEnabled?levyNoise(rng,mtjDelta||LEVY_ALPHA_DEFAULT)
+        :mtjEnabled?langnevinNoise(rng,mtjDelta)
+        :randn(rng));
       // Jump term: Poisson arrivals with signed random magnitude
       const jump=rng()<jumpProb?((rng()>0.5?1:-1)*(jumpMagnitude||0)):0;
       path[i]=path[i-1]+a_t*path[i-1]*dt+noise+jump;
@@ -1628,6 +1631,342 @@ function computeEfficiencyRatio(text, entropy) {
   return lenNorm > 0 ? entropy / lenNorm : null;
 }
 
+// ── PID Controller on Variance ─────────────────────────────────
+// Classical control theory applied to smoothedVar as the process variable.
+// P = proportional to current error (var - target)
+// I = accumulated error over last N turns (history of over/under correction)
+// D = rate of change (is variance accelerating or decelerating?)
+// Returns a correction multiplier for the pipe injection strength.
+// Reference: Åström & Hägglund (1995) PID Controllers: Theory, Design, Tuning.
+const PID_KP = 1.20;   // proportional gain
+const PID_KI = 0.08;   // integral gain
+const PID_KD = 0.40;   // derivative gain
+const PID_TARGET = 0.080; // target variance = CALM threshold
+
+function computePIDCorrection(varHistory) {
+  if (!varHistory || varHistory.length < 2) return {p:0, i:0, d:0, output:0};
+  const target = PID_TARGET;
+  const current = varHistory[varHistory.length-1];
+  const prev    = varHistory[varHistory.length-2];
+  // P term: current error
+  const error = current - target;
+  const p = PID_KP * error;
+  // I term: accumulated error over last 8 turns (anti-windup cap at ±1.0)
+  const window = varHistory.slice(-8);
+  const integral = window.reduce((s,v)=>s+(v-target),0) / window.length;
+  const i = Math.max(-1.0, Math.min(1.0, PID_KI * integral));
+  // D term: rate of change
+  const d = PID_KD * (current - prev);
+  // Output: total correction signal, clamped [0, 3.0]
+  const output = Math.max(0, Math.min(3.0, 1.0 + p + i + d));
+  return {p, i, d, output, error};
+}
+
+// ── Mutual Information between turns ──────────────────────────
+// Measures statistical dependence between current response and prior context.
+// Stronger than JSD — JSD measures distribution distance, MI measures
+// how much knowing the context reduces uncertainty about the response.
+// Uses discretized term frequency bins for in-browser tractability.
+// MI = H(response) + H(context) - H(response, context)
+// Low MI (< 0.3): response is statistically independent of conversation — drift risk.
+function computeMutualInformation(newTokens, contextTokens) {
+  if (!newTokens.length || !contextTokens.length) return null;
+  const allTerms = new Set([...newTokens, ...contextTokens]);
+  if (!allTerms.size) return null;
+  // Build joint and marginal frequencies
+  const freqA={}, freqB={}, freqJoint={};
+  const nA=newTokens.length, nB=contextTokens.length;
+  newTokens.forEach(w=>{ freqA[w]=(freqA[w]||0)+1; });
+  contextTokens.forEach(w=>{ freqB[w]=(freqB[w]||0)+1; });
+  // Joint: terms appearing in both
+  allTerms.forEach(w=>{
+    const pA=(freqA[w]||0)/nA, pB=(freqB[w]||0)/nB;
+    if(pA>0&&pB>0) freqJoint[w]=Math.sqrt(pA*pB); // geometric mean as joint proxy
+  });
+  // Marginal entropies
+  const hA = -Object.values(freqA).reduce((s,c)=>{const p=c/nA;return s+p*Math.log2(p);},0);
+  const hB = -Object.values(freqB).reduce((s,c)=>{const p=c/nB;return s+p*Math.log2(p);},0);
+  const jTotal = Object.values(freqJoint).reduce((s,v)=>s+v,0)||1;
+  const hJoint = -Object.values(freqJoint).reduce((s,v)=>{const p=v/jTotal;return p>0?s+p*Math.log2(p):s;},0);
+  const mi = Math.max(0, hA + hB - hJoint);
+  // Normalize to [0,1] by dividing by max possible MI = min(H(A),H(B))
+  const maxMI = Math.max(0.001, Math.min(hA, hB));
+  return Math.min(1, mi / maxMI);
+}
+
+// ── Lyapunov Stability Bound ───────────────────────────────────
+// For the OU SDE: dε = a(t)ε dt + b dW_t
+// Lyapunov function V(ε) = ε². dV/dt = 2ε·dε/dt = 2a(t)·ε²
+// System is stable iff a(t) < 0 for all t (mean-reverting).
+// a(t) = (α + β_p·sin(ωt) - δ·σ²) / (1+κ)
+// Worst case (max instability): sin(ωt)=1 → a_max = (α + β_p - δ·σ²)/(1+κ)
+// Returns: {stable, a_min, a_max, margin} where margin > 0 = stable
+// Reference: Lyapunov (1892); applied to OU: Gardiner (1985) Handbook of Stochastic Methods.
+function computeLyapunovBound(sdeParams, smoothedVar) {
+  const {alpha=-0.25, beta_p=0.18, kappa=0.444, delta=0.30} = sdeParams;
+  const lam = 1/(1+kappa);
+  const varTerm = (delta||0)*(smoothedVar||0);
+  // Worst case: sin=+1 (most destabilizing)
+  const a_max = lam * (alpha + beta_p - varTerm);
+  // Best case: sin=-1 (most stabilizing)
+  const a_min = lam * (alpha - beta_p - varTerm);
+  // Stable iff a_max < 0. Margin = how far below 0 the worst case is.
+  const margin = -a_max; // positive = stable
+  const stable = margin > 0;
+  return { stable, a_max, a_min, margin: parseFloat(margin.toFixed(6)) };
+}
+
+// ── Realized Volatility ────────────────────────────────────────
+// Rolling window of squared returns (score changes) — faster-reacting
+// variance complement to GARCH. Captures volatility spikes GARCH may lag.
+// RV_t = (1/n) Σ (r_i)² where r_i = score[i] - score[i-1]
+// Reference: Andersen & Bollerslev (1998). Answering the Skeptics.
+function computeRealizedVolatility(scoreHistory, window=8) {
+  if (scoreHistory.length < 3) return null;
+  const recent = scoreHistory.slice(-Math.min(window, scoreHistory.length));
+  if (recent.length < 2) return null;
+  const returns = [];
+  for (let i=1; i<recent.length; i++) returns.push(Math.pow(recent[i]-recent[i-1],2));
+  return returns.reduce((s,v)=>s+v,0) / returns.length;
+}
+
+// ── Kolmogorov Complexity Proxy ────────────────────────────────
+// LZ-based compression ratio as information density measure.
+// High ratio = complex, information-dense response.
+// Low ratio = repetitive, compressible, low-information.
+// Uses run-length encoding as LZ proxy — fully in-browser.
+// Reference: Li & Vitányi (1997) An Introduction to Kolmogorov Complexity.
+function computeKolmogorovProxy(text) {
+  if (!text || text.length < 10) return null;
+  const s = text.toLowerCase().replace(/[^a-z0-9]/g,' ').trim();
+  if (!s.length) return null;
+  // Run-length encoding length as LZ proxy
+  let rle=1;
+  for(let i=1;i<s.length;i++) if(s[i]!==s[i-1]) rle++;
+  return Math.min(1, rle / s.length); // compression ratio proxy
+}
+
+// ── Lévy Flight Noise ─────────────────────────────────────────
+// Heavier-tailed than Langevin/Gaussian. Models rare large behavioral jumps.
+// Uses Chambers-Mallows-Stuck method for α-stable distributions.
+// α=2.0: Gaussian limit. α=1.5: moderate heavy tail. α=1.0: Cauchy (very heavy).
+// Complements jump-diffusion (Poisson arrivals) with continuous heavy tails.
+// Reference: Chambers, Mallows & Stuck (1976). A Method for Simulating Stable R.V.s.
+const LEVY_ALPHA_DEFAULT = 1.7; // stability index — 1.0=Cauchy, 2.0=Gaussian
+function levyNoise(rng, alpha=LEVY_ALPHA_DEFAULT) {
+  if (Math.abs(alpha-2.0)<0.01) { // Gaussian limit
+    const u1=Math.max(rng(),1e-10),u2=rng();
+    return Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
+  }
+  // Chambers-Mallows-Stuck method
+  const u = (rng()-0.5)*Math.PI;
+  const w = -Math.log(Math.max(rng(),1e-10));
+  const num = Math.sin(alpha*u);
+  const den = Math.pow(Math.cos(u),(1/alpha));
+  const factor = Math.pow(Math.cos((1-alpha)*u)/w, (1-alpha)/alpha);
+  const z = (num/den)*factor;
+  return isFinite(z)?Math.max(-5,Math.min(5,z)):0; // hard clamp for stability
+}
+
+// ── Fisher Information ─────────────────────────────────────────
+// Rate of change in score distribution per turn.
+// Spike = sudden shift in response character.
+// Fisher(t) ≈ Σ (∂ log p(x) / ∂θ)² — approximated as squared score velocity
+// normalized by variance. High Fisher = distribution changing rapidly.
+// Reference: Fisher (1925) Theory of Statistical Estimation.
+function computeFisherInformation(scoreHistory) {
+  if (scoreHistory.length < 3) return null;
+  const n = scoreHistory.length;
+  const mean = scoreHistory.reduce((s,v)=>s+v,0)/n;
+  const variance = scoreHistory.reduce((s,v)=>s+Math.pow(v-mean,2),0)/n;
+  if (variance < 1e-8) return 0;
+  const recent = scoreHistory.slice(-4);
+  let velocitySum = 0;
+  for(let i=1; i<recent.length; i++) {
+    velocitySum += Math.pow(recent[i]-recent[i-1],2);
+  }
+  const velocity = velocitySum / (recent.length-1);
+  return velocity / variance;
+}
+
+// ── Extended Kalman Filter (EKF) ──────────────────────────────
+// Linearizes nonlinear dynamics at each step via Jacobian.
+// More accurate than linear Kalman for nonlinear OU + periodic forcing.
+// Uses analytical Jacobian of f(x,t) = x + a(t)*x*dt → ∂f/∂x = 1 + a(t)*dt
+// Reference: Jazwinski (1970) Stochastic Processes and Filtering Theory.
+function ekfStep(state, obs, t, params, kalR, kalSigP, smoothedVar) {
+  const {alpha=-0.25, beta_p=0.18, omega:om=2*Math.PI/12, kappa=0.444, delta=0.30} = params;
+  const lam = 1/(1+kappa);
+  const a_t = lam*(alpha + beta_p*Math.sin(om*t) - delta*(smoothedVar||0));
+  const R = kalR ?? 0.015;
+  const sigP = kalSigP ?? 0.06;
+  const Q = Math.pow(sigP*lam, 2);
+  // Nonlinear state propagation
+  const x_p = state.x + a_t*state.x*0.1;
+  // Jacobian F = ∂f/∂x = 1 + a_t*dt
+  const F = 1 + a_t*0.1;
+  const P_p = F*F*state.P + Q;
+  const K = P_p / (P_p + R);
+  return {
+    x: x_p + K*(obs - x_p),
+    P: Math.max((1-K)*P_p, 1e-8),
+  };
+}
+
+// ── Particle Filter (Sequential Monte Carlo) ─────────────────
+// Non-parametric. Handles non-Gaussian, multimodal drift distributions.
+// Represents state distribution as N weighted particles.
+// Systematic resampling when effective sample size drops below N/2.
+// Reference: Gordon, Salmond & Smith (1993) Novel approach to nonlinear/non-Gaussian state estimation.
+const PF_N_PARTICLES = 200;
+function particleFilterStep(particles, obs, t, params, kalR, kalSigP, smoothedVar) {
+  if (!particles || !particles.length) {
+    // Initialize particles from prior
+    const rng = makeRng(Date.now()%65536);
+    return Array.from({length:PF_N_PARTICLES}, ()=>({
+      x: (rng()-0.5)*0.2, w: 1/PF_N_PARTICLES
+    }));
+  }
+  const {alpha=-0.25, beta_p=0.18, omega:om=2*Math.PI/12, kappa=0.444, delta=0.30} = params;
+  const lam = 1/(1+kappa);
+  const a_t = lam*(alpha + beta_p*Math.sin(om*t) - delta*(smoothedVar||0));
+  const sigP = kalSigP ?? 0.06;
+  const Q = sigP*lam;
+  const R = kalR ?? 0.015;
+  const rng = makeRng((t*1000|0) % 65536);
+  // Propagate and weight
+  let updated = particles.map(p => {
+    const noise = randn(rng)*Q;
+    const x_new = p.x + a_t*p.x*0.1 + noise;
+    // Likelihood: Gaussian obs model
+    const innov = obs - x_new;
+    const w_new = p.w * Math.exp(-0.5*innov*innov/(R*R)) + 1e-300;
+    return {x: x_new, w: w_new};
+  });
+  // Normalize weights
+  const wSum = updated.reduce((s,p)=>s+p.w, 0);
+  updated = updated.map(p=>({...p, w:p.w/wSum}));
+  // Effective sample size
+  const ess = 1 / updated.reduce((s,p)=>s+p.w*p.w, 0);
+  // Systematic resampling if ESS < N/2
+  if (ess < PF_N_PARTICLES/2) {
+    const cumW = [];
+    let c = 0;
+    updated.forEach(p=>{ c+=p.w; cumW.push(c); });
+    const u0 = rng()/PF_N_PARTICLES;
+    const resampled = [];
+    let j = 0;
+    for(let i=0; i<PF_N_PARTICLES; i++) {
+      const u = u0 + i/PF_N_PARTICLES;
+      while(cumW[j]<u && j<PF_N_PARTICLES-1) j++;
+      resampled.push({x:updated[j].x, w:1/PF_N_PARTICLES});
+    }
+    updated = resampled;
+  }
+  // Posterior mean and variance
+  const mean = updated.reduce((s,p)=>s+p.x*p.w, 0);
+  const variance = updated.reduce((s,p)=>s+p.w*Math.pow(p.x-mean,2), 0);
+  return { particles: updated, x: mean, P: variance };
+}
+
+// ── Vasicek SDE Simulation ────────────────────────────────────
+// Like CIR but allows negative values — models sessions that go
+// genuinely incoherent below zero. dX = κ(θ−X)dt + σ dW
+// No sqrt(X) term → X can go negative → different risk profile.
+// Reference: Vasicek (1977) An equilibrium characterization of the term structure.
+function simulateVasicek(params, T=20, dt=0.02, nPaths=50, seed=42) {
+  const {kappa=0.444, theta=0.10, sigma=0.08} = params;
+  const nSteps=Math.ceil(T/dt), rng=makeRng(seed), paths=[];
+  for(let p=0; p<nPaths; p++) {
+    const path=new Float32Array(nSteps+1); path[0]=theta;
+    for(let i=1; i<=nSteps; i++) {
+      path[i] = path[i-1] + kappa*(theta-path[i-1])*dt + sigma*Math.sqrt(dt)*randn(rng);
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── SABR Stochastic Volatility Simulation ─────────────────────
+// Stochastic Alpha Beta Rho model. Two coupled SDEs:
+// dF = σ·F^β dW₁    (forward process, β=1 = log-normal)
+// dσ = α·σ dW₂      (vol-of-vol process)
+// corr(dW₁,dW₂) = ρ
+// Produces richer volatility surfaces than GARCH + OU alone.
+// Reference: Hagan et al. (2002) Managing Smile Risk.
+function simulateSABR(params, T=20, dt=0.02, nPaths=50, seed=42) {
+  const {alpha=0.30, beta=1.0, rho=-0.50, nu=0.40, f0=0.08} = params;
+  const nSteps=Math.ceil(T/dt), rng=makeRng(seed), paths=[];
+  for(let p=0; p<nPaths; p++) {
+    const path=new Float32Array(nSteps+1); path[0]=0;
+    let f=f0, vol=alpha;
+    for(let i=1; i<=nSteps; i++) {
+      const z1=randn(rng), z2=randn(rng);
+      const w1=z1, w2=rho*z1+Math.sqrt(Math.max(1-rho*rho,0))*z2;
+      const df = vol*Math.pow(Math.abs(f)+1e-8, beta)*Math.sqrt(dt)*w1;
+      const dvol = nu*vol*Math.sqrt(dt)*w2;
+      f = f + df;
+      vol = Math.max(vol + dvol, 1e-8);
+      path[i] = path[i-1] + df;
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── Berry Phase (Geometric Phase Proxy) ──────────────────────
+// Geometric phase accumulated as session trajectory moves through
+// parameter space. Measures whether coherence trajectory forms a
+// closed loop — did the session return to its origin state?
+// Berry phase = ∮ A·dq where A is the Berry connection.
+// Proxy: path integral of score gradient dotted with parameter velocity.
+// High Berry phase = trajectory closed (stable session).
+// Low Berry phase = session drifted away and never returned.
+// Reference: Berry (1984) Quantal Phase Factors Accompanying Adiabatic Changes.
+function computeBerryPhase(scoreHistory) {
+  if (scoreHistory.length < 6) return null;
+  // Compute winding number proxy: how many times does the score
+  // cross its mean from above/below (oscillation = closed loops)
+  const mean = scoreHistory.reduce((s,v)=>s+v,0)/scoreHistory.length;
+  let crossings = 0;
+  for(let i=1; i<scoreHistory.length; i++) {
+    const prev = scoreHistory[i-1]-mean;
+    const curr = scoreHistory[i]-mean;
+    if(prev*curr < 0) crossings++;
+  }
+  // Normalize: more crossings = more closed loops = higher geometric phase
+  const phase = (crossings / (scoreHistory.length-1)) * Math.PI;
+  return parseFloat(phase.toFixed(4));
+}
+
+// ── Spin Hall Effect Coupling (Scalar Proxy) ──────────────────
+// Simplified scalar model of SOT (Spin-Orbit Torque) switching.
+// In spintronics: current-induced spin transfer torque drives magnetic
+// state switching. Applied to coherence: variance acts as spin current,
+// Kalman x̂ as the magnetization state being torqued.
+// SHE torque τ = θ_SH · J_s × m̂  — here simplified to scalar:
+// τ = θ_SH · smoothedVar · sign(0.5 - kalmanX)
+// Positive torque = pushing toward stability, negative = away.
+// θ_SH (spin Hall angle) ≈ 0.1–0.3 for heavy metals (Pt, W, Ta).
+// Reference: Sinova et al. (2015) Spin Hall effects. Reviews of Modern Physics.
+const SHE_THETA = 0.20; // spin Hall angle — efficiency of charge-to-spin conversion
+
+function computeSHETorque(smoothedVar, kalmanX) {
+  if (smoothedVar == null) return null;
+  // Spin current proportional to variance (charge current analog)
+  const spinCurrent = smoothedVar;
+  // Magnetization direction: above 0.5 = stable, below = unstable
+  const magnetizationSign = kalmanX >= 0.5 ? 1 : -1;
+  // Torque: SHE angle × spin current × cross product (simplified to scalar)
+  const torque = SHE_THETA * spinCurrent * magnetizationSign;
+  // Effective correction: positive torque stabilizes, negative destabilizes
+  return parseFloat(torque.toFixed(6));
+}
+
+
+
+
+
 // ── Framework Document ─────────────────────────────────────────
 const FRAMEWORK_CONTENT=`VECTOR — Volatility-Sensitive Correction Engine
 TIME-VARYING ERROR DYNAMICS & GENERATIVE OUTPUT CORRECTION
@@ -2081,6 +2420,9 @@ const TuneModal = React.memo(function TuneModal() {
     hestonSigma,setHestonSigma,hestonRho,setHestonRho,hestonV0,setHestonV0,
     autoTuneEnabled,setAutoTuneEnabled,lastAutoTune,
     domainAnchor,setDomainAnchor,
+    levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
+    useEKF,setUseEKF,useParticle,setUseParticle,
+    berryPhase,sheTorque,
   } = useContext(TuneCtx);
   const [displayPrefs,setDisplayPrefs] = React.useState(()=>loadDisplayPrefs());
   if (!showTuning) return null;
@@ -2194,6 +2536,42 @@ const TuneModal = React.memo(function TuneModal() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Physics & Control Modules */}
+          <div style={{borderTop:"1px solid #B0C4DA",paddingTop:12,marginTop:4}}>
+            <div style={{fontFamily:"Courier New,monospace",fontSize:9,color:"#1560B0",
+              letterSpacing:2,marginBottom:8}}>PHYSICS & CONTROL MODULES</div>
+            <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#607080",
+              marginBottom:8,lineHeight:1.5}}>
+              Optional advanced signal processing. All default OFF.
+              Toggle individually — each adds computation but no API tokens.
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+              {[
+                ["Lévy Flight Noise",   levyEnabled,  ()=>setLevyEnabled(p=>!p),  "#4848B8","α-stable heavy-tail noise (α=1.7). Replaces Langevin when on."],
+                ["Ext. Kalman (EKF)",   useEKF,       ()=>setUseEKF(p=>!p),       "#0A7878","Nonlinear Jacobian Kalman. More accurate for OU dynamics."],
+                ["Particle Filter",     useParticle,  ()=>setUseParticle(p=>!p),  "#9A5C08","200-particle SMC. Handles non-Gaussian drift. Blends with Kalman."],
+              ].map(([label,val,toggle,col,note])=>(
+                <div key={label} style={{display:"flex",alignItems:"center",gap:8,
+                  padding:"6px 10px",borderRadius:4,
+                  background:val?"#EEF4FF":"#F4F4F8",
+                  border:`1px solid ${val?col+"44":"#CDD8E8"}`}}>
+                  <button onClick={toggle} style={{
+                    width:28,height:16,borderRadius:8,border:"none",cursor:"pointer",
+                    background:val?col:"#B4C4D4",transition:"background .2s",flexShrink:0}}>
+                    <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",
+                      margin:"2px",marginLeft:val?14:2,transition:"margin .2s"}}/>
+                  </button>
+                  <div>
+                    <div style={{fontFamily:"Courier New, monospace",fontSize:8,
+                      color:val?col:"#2E5070",letterSpacing:1}}>{label}</div>
+                    <div style={{fontFamily:"Courier New, monospace",fontSize:7,
+                      color:"#607080",lineHeight:1.3}}>{note}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -2692,6 +3070,7 @@ const TuneModal = React.memo(function TuneModal() {
                 ["Alt SDE Model",   showSdeConfig,    ()=>setShowSdeConfig(p=>!p),    "#C81030","Use CIR or Heston SDE"],
                 ["Custom Rails",    showRailsConfig,  ()=>setShowRailsConfig(p=>!p),  "#4828A0","Inject custom guidelines"],
                 ["Stability Panel", featZeroDrift,    ()=>setFeatZeroDrift(p=>!p),    "#906000","Convergence sidebar panel"],
+
                 ["Edit Constants",  showConstEditor,  ()=>setShowConstEditor(p=>!p),  "#9A5C08","Modify framework constants"],
                 ["MHT Study",       showMhtStudy,     ()=>setShowMhtStudy(p=>!p),      "#1E6A8A","Metatron-Hudson Theory SDE"],
                 ["Integrity Floor",  showIntegrityFloor, ()=>setShowIntegrityFloor(p=>!p), "#4828A0","Hydrogen floor integrity detection"],
@@ -2723,7 +3102,7 @@ const TuneModal = React.memo(function TuneModal() {
               <div style={{fontFamily:"Courier New,monospace",fontSize:9,color:"#C81030",
                 letterSpacing:2,marginBottom:8}}>SDE MODEL CONFIG</div>
               <div style={{display:"flex",gap:6,marginBottom:10}}>
-                {[["default","DEFAULT (OU)"],["cir","CIR"],["heston","HESTON"]].map(([key,label])=>(
+                {[["default","DEFAULT (OU)"],["cir","CIR"],["heston","HESTON"],["vasicek","VASICEK"],["sabr","SABR"]].map(([key,label])=>(
                   <button key={key} onClick={()=>setSdeModel(key)}
                     style={{padding:"4px 14px",borderRadius:4,cursor:"pointer",
                       fontFamily:"Courier New,monospace",fontSize:8,
@@ -3916,6 +4295,13 @@ export default function VECTOR() {
   const [sdeBetaOn,       setSdeBetaOn]       = useState(true);
   const [sdeSigmaOn,      setSdeSigmaOn]      = useState(true);
   const [mtjEnabled,      setMtjEnabled]      = useState(true);
+  const [levyEnabled,     setLevyEnabled]     = useState(false);
+  const [levyAlpha,       setLevyAlpha]       = useState(LEVY_ALPHA_DEFAULT);
+  const [useEKF,          setUseEKF]          = useState(false);  // Extended Kalman Filter
+  const [useParticle,     setUseParticle]     = useState(false);  // Particle Filter
+  const [particleState,   setParticleState]   = useState([]);     // particle distribution
+  const [berryPhase,      setBerryPhase]      = useState(null);
+  const [sheTorque,       setSHETorque]       = useState(null);
   const [mtjDelta,        setMtjDelta]        = useState(MTJ_DELTA_DEFAULT);
   // Post-audit custom threshold
   const [postAuditThresh, setPostAuditThresh] = useState(0.70);
@@ -4155,6 +4541,10 @@ export default function VECTOR() {
         if (p.sdeAlphaVal!=null)        setSdeAlphaVal(p.sdeAlphaVal);
         if (p.mtjEnabled!=null)         setMtjEnabled(p.mtjEnabled);
         if (p.mtjDelta!=null)           setMtjDelta(p.mtjDelta);
+        if (p.levyEnabled!=null)       setLevyEnabled(p.levyEnabled);
+        if (p.levyAlpha!=null)         setLevyAlpha(p.levyAlpha);
+        if (p.useEKF!=null)            setUseEKF(p.useEKF);
+        if (p.useParticle!=null)       setUseParticle(p.useParticle);
         if (p.sdeBetaVal!=null)         setSdeBetaVal(p.sdeBetaVal);
         if (p.sdeSigmaVal!=null)        setSdeSigmaVal(p.sdeSigmaVal);
         if (p.sdeAlphaOn!=null)         setSdeAlphaOn(p.sdeAlphaOn);
@@ -4243,7 +4633,7 @@ export default function VECTOR() {
           // P1 fix: coherence weights + math tunables were missing — reset to defaults on reload
           mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
           mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-          sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,
+          sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
           postAuditThresh,showSdePaths,pathOpacity,
           // Advanced Tab
           advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
@@ -4261,7 +4651,7 @@ export default function VECTOR() {
      nPaths,postAuditMode,customMutePhrases,researchNotes,mathEpsilon,
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,
+     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,showSdePaths,pathOpacity,
      advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,
      caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
@@ -4300,11 +4690,13 @@ export default function VECTOR() {
     alpha:sdeAlphaOn?sdeAlphaVal:SDE_PARAMS.alpha,
     beta_p:sdeBetaOn?sdeBetaVal:SDE_PARAMS.beta_p,
     sigma:sdeSigmaOn?sdeSigmaVal:SDE_PARAMS.sigma,
-    mtjEnabled,mtjDelta,
-  }),[sdeAlphaOn,sdeAlphaVal,sdeBetaOn,sdeBetaVal,sdeSigmaOn,sdeSigmaVal,mtjEnabled,mtjDelta]);
+    mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
+  }),[sdeAlphaOn,sdeAlphaVal,sdeBetaOn,sdeBetaVal,sdeSigmaOn,sdeSigmaVal,mtjEnabled,mtjDelta,levyEnabled,levyAlpha]);
   const livePaths = useMemo(()=>{
-    if (sdeModel==="cir")    return simulateCIR({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
-    if (sdeModel==="heston") return simulateHeston({kappa:hestonKappa,theta:hestonTheta,sigma:hestonSigma,rho:hestonRho,v0:hestonV0},20,.02,nPaths,42);
+    if (sdeModel==="cir")     return simulateCIR({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
+    if (sdeModel==="heston")  return simulateHeston({kappa:hestonKappa,theta:hestonTheta,sigma:hestonSigma,rho:hestonRho,v0:hestonV0},20,.02,nPaths,42);
+    if (sdeModel==="vasicek") return simulateVasicek({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
+    if (sdeModel==="sabr")    return simulateSABR({},20,.02,nPaths,42);
     return simulateSDE(liveSDEOverride,20,.02,nPaths,42);
   },[sdeModel,nPaths,liveSDEOverride,cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0]);
   // R3 fix: memoized — null customMutePhrases returned new MUTE_PHRASES ref every render,
@@ -4473,6 +4865,12 @@ export default function VECTOR() {
       const hSignalCount=eventLog.filter(e=>e.type==="probable_hallucination_signal").length;
       const bSignalCount=eventLog.filter(e=>e.type==="behavioral_signal").length;
 
+      // PID correction: compute before pipe to potentially escalate mode
+      const pidPre = computePIDCorrection([...(scoreHistory.slice(-7)), rawScore]);
+      // If PID output > 2.0 and in audit mode, auto-escalate to moderate
+      if (featPipe && pidPre.output > 2.0 && harnessMode === "audit" && turn >= 3) {
+        setHarnessMode("moderate");
+      }
       const pipeInj=featPipe?buildPipeInjection(
         smoothedVar??0,kalmanState.x,kalmanState.P,
         calmStreak,driftCount,harnessMode,turn,hSignalCount,bSignalCount,
@@ -4695,13 +5093,22 @@ export default function VECTOR() {
         if (featKalman) {
           const t_k=turn*(2*Math.PI/12);
           const liveSDEParams={...liveSDEOverride,kappa:userKappa};
-          newKalman=kalmanStep(kalmanState,rawScore,t_k,liveSDEParams,mathKalmanR,mathKalmanSigP,smoothedVar??0);
+          newKalman=useEKF
+            ?ekfStep(kalmanState,rawScore,t_k,liveSDEParams,mathKalmanR,mathKalmanSigP,smoothedVar??0)
+            :kalmanStep(kalmanState,rawScore,t_k,liveSDEParams,mathKalmanR,mathKalmanSigP,smoothedVar??0);
           // Tightens estimate when post-audit diverges from live score.
           if (postAuditScore!==null&&doPostAudit) {
             newKalman=kalmanStep(newKalman,postAuditScore,t_k,liveSDEParams,mathKalmanR,mathKalmanSigP,smoothedVar??0);
           }
           setKalmanState(newKalman);
-          setKalmanHistory(h=>[...h,newKalman].slice(-20)); // V1.5.42: keep last 20 for innovation check
+          setKalmanHistory(h=>[...h,newKalman].slice(-20));
+          // Particle filter: update if enabled
+          if(useParticle) {
+            const pfResult=particleFilterStep(particleState.length?particleState:null,rawScore,t_k,liveSDEParams,mathKalmanR,mathKalmanSigP,smoothedVar??0);
+            if(pfResult.particles) setParticleState(pfResult.particles);
+            // Blend PF mean with Kalman estimate
+            newKalman={x:(newKalman.x+pfResult.x)*0.5, P:(newKalman.P+pfResult.P)*0.5};
+          }
         }
         setScoreHistory(newHist);
         newVar=featGARCH
@@ -4787,6 +5194,18 @@ export default function VECTOR() {
       const hedgeResult = detectHedgeDensity(content_raw);
       const innovAC    = computeInnovationAutocorrelation(newHist, kalmanHistory);
       const effRatio   = computeEfficiencyRatio(content_raw, hallucinationAssessment.entropy??0);
+      // ── New math signals ──────────────────────────────────────
+      const contextTokens = tokenize(newMessages.filter(m=>m.role==="assistant").slice(-4).map(m=>getTextFromContent(m.content)).join(" "));
+      const mutualInfo    = computeMutualInformation(tokenize(content_raw), contextTokens);
+      const lyapunov      = computeLyapunovBound({...liveSDEOverride,kappa:userKappa}, newVar??smoothedVar??0);
+      const realizedVol   = computeRealizedVolatility(newHist);
+      const kolmogorov    = computeKolmogorovProxy(content_raw);
+      const fisherInfo    = computeFisherInformation(newHist);
+      const pidResult     = computePIDCorrection([...(scoreHistory.slice(-7)), rawScore]);
+      const berryResult   = computeBerryPhase(newHist);
+      const sheResult     = computeSHETorque(newVar??smoothedVar??0, newKalman.x);
+      if(berryResult!==null) setBerryPhase(berryResult);
+      if(sheResult!==null)   setSHETorque(sheResult);
 
       // Truncation fires as B-signal (model didn't complete answer)
       if (truncated) {
@@ -4820,6 +5239,10 @@ export default function VECTOR() {
         ewma:ewmaResult.ewma, trend:ewmaResult.trend, momentum:ewmaResult.momentum,
         anchorDist, truncated, hedgeCount:hedgeResult.count,
         innovAC, effRatio,
+        mutualInfo, lyapunov:lyapunov.margin, lyapunovStable:lyapunov.stable,
+        realizedVol, kolmogorov, fisherInfo,
+        pidP:pidResult.p, pidI:pidResult.i, pidD:pidResult.d, pidOutput:pidResult.output,
+        berryPhase:berryResult, sheTorque:sheResult,
         entropy:hallucinationAssessment.entropy??null,
         vocabGrowth:hallucinationAssessment.vocabGrowth??null,
       }];
@@ -4985,12 +5408,13 @@ export default function VECTOR() {
      // only used in UI rendering. Was causing unnecessary callback invalidation.
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,
+     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,
      livePaths,activeMutePhrases,
      pinnedDocs,sessionMemory,domainAnchor,
      autoTuneEnabled,feedbackState,provider,
-     kalmanHistory,featIntegrityFloor,integrityThreshold]);
+     kalmanHistory,featIntegrityFloor,integrityThreshold,
+     useEKF,useParticle,particleState]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
 
@@ -5166,11 +5590,13 @@ export default function VECTOR() {
     hestonSigma,setHestonSigma,hestonRho,setHestonRho,hestonV0,setHestonV0,
     autoTuneEnabled,setAutoTuneEnabled,lastAutoTune,
     domainAnchor,setDomainAnchor,
+    useEKF,setUseEKF,useParticle,setUseParticle,
+    berryPhase,sheTorque,
   }),[showTuning,activePreset,customConfig,userKappa,userAnchor,hudsonMode,
       featKalman,featGARCH,featSDE,featRAG,featPipe,featMute,featGate,
       featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,postAuditThresh,
       adaptiveSigmaOn,adaptedSigma,adaptationRate,
-      sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,
+      sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
       customMutePhrases,mutePhraseInput,
       mathEpsilon,mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
       mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
@@ -5180,7 +5606,8 @@ export default function VECTOR() {
       showPoole,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,caPassRate,
       showIntegrityFloor,featIntegrityFloor,integrityThreshold,integrityBreachCount,
       userRailsEnabled,userCustomRails,sdeModel,
-      cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0]);
+      cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
+      useEKF,useParticle,berryPhase,sheTorque]);
 
   const sessionCtxValue = useMemo(()=>({
     exportContent,setExportContent,exportCopied,setExportCopied,
@@ -6411,6 +6838,46 @@ export default function VECTOR() {
                 ["Kalman x̂",    kalmanState.x.toFixed(4),            "#0A7878"],
                 ["Kalman P",     kalmanState.P.toFixed(5),             null],
                 ["Snapshots",    turnSnapshots.length,                 turnSnapshots.length>0?"#178040":"#2E5070"],
+                // ── Advanced math metrics ──────────────────────
+                ["Lyapunov",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].lyapunov!=null
+                    ?(coherenceData[coherenceData.length-1].lyapunovStable?"✓ STABLE ":"⚠ UNSTABLE ")+
+                      coherenceData[coherenceData.length-1].lyapunov?.toFixed(4)
+                    :"—",
+                  coherenceData.length>0?(coherenceData[coherenceData.length-1].lyapunovStable?"#178040":"#C81030"):"#2E5070"],
+                ["PID output",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].pidOutput!=null
+                    ?"P="+coherenceData[coherenceData.length-1].pidP?.toFixed(3)+
+                      " I="+coherenceData[coherenceData.length-1].pidI?.toFixed(3)+
+                      " D="+coherenceData[coherenceData.length-1].pidD?.toFixed(3)
+                    :"—",
+                  coherenceData.length>0&&(coherenceData[coherenceData.length-1].pidOutput??0)>2.0?"#C81030":"#2E5070"],
+                ["Realized Vol",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].realizedVol!=null
+                    ?coherenceData[coherenceData.length-1].realizedVol.toFixed(5)
+                    :"—",
+                  coherenceData.length>0&&(coherenceData[coherenceData.length-1].realizedVol??0)>0.015?"#9A5C08":"#2E5070"],
+                ["Mutual Info",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].mutualInfo!=null
+                    ?coherenceData[coherenceData.length-1].mutualInfo.toFixed(3)
+                    :"—",
+                  coherenceData.length>0&&(coherenceData[coherenceData.length-1].mutualInfo??1)<0.30?"#C81030":"#178040"],
+                ["Fisher Info",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].fisherInfo!=null
+                    ?coherenceData[coherenceData.length-1].fisherInfo.toFixed(4)
+                    :"—",
+                  coherenceData.length>0&&(coherenceData[coherenceData.length-1].fisherInfo??0)>2.0?"#9A5C08":"#2E5070"],
+                ["LZ Complexity",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].kolmogorov!=null
+                    ?coherenceData[coherenceData.length-1].kolmogorov.toFixed(3)
+                    :"—",
+                  "#2E5070"],
+                ["Berry Phase",
+                  berryPhase!=null?berryPhase.toFixed(4):"—",
+                  berryPhase!=null&&berryPhase>1.5?"#178040":berryPhase!=null&&berryPhase<0.5?"#C81030":"#4848B8"],
+                ["SHE Torque",
+                  sheTorque!=null?sheTorque.toFixed(6):"—",
+                  sheTorque!=null&&sheTorque>0?"#178040":"#C81030"],
               ].map(([label,val,color])=>(
                 <div key={label} style={S.statRow}>
                   <span style={S.statLabel}>{label}</span>
