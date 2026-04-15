@@ -13,6 +13,13 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.4.2] — 2026-04-15
+
+### Bug Fix
+- **Lévy Flight toggle unresponsive** — `levyEnabled` and `setLevyEnabled` were in the `tuneCtxValue` deps array but missing from the value object itself. TuneModal could not read or set the state. Toggle now works.
+
+---
+
 ## [1.4.1] — 2026-04-15
 
 ### Bug Fix
