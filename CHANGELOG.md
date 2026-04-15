@@ -13,6 +13,46 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.4.1] — 2026-04-15
+
+### Bug Fix
+- **`levyEnabled is not defined` artifact crash** — `levyEnabled`, `useEKF`, `useParticle`, `berryPhase`, `sheTorque` were declared as state in the main component but never added to `TuneCtx` value object or destructured in `TuneModal`. Any render touching the FEATURES tab or sidebar metrics crashed. All five now properly in context.
+
+---
+
+## [1.4.0] — 2026-04-15
+
+### New Math Modules
+- **Extended Kalman Filter (EKF)** — Nonlinear Jacobian linearization at each step. More accurate than linear Kalman for the OU + periodic forcing dynamics. Toggle in FEATURES. Blends with standard Kalman when enabled.
+- **Particle Filter (Sequential Monte Carlo)** — Non-parametric. 200 particles representing the full state distribution. Systematic resampling when ESS drops below N/2. Handles non-Gaussian and multimodal drift. Toggle in FEATURES. Blends PF mean with Kalman estimate.
+- **Vasicek SDE Model** — Like CIR but allows negative values. Models sessions that go genuinely incoherent below zero. `dX = κ(θ−X)dt + σ dW`. Selectable in Advanced → Alt SDE Model (shares CIR params).
+- **SABR Stochastic Volatility Model** — Two coupled SDEs: forward process + vol-of-vol. Stochastic Alpha Beta Rho. Richer volatility surfaces than GARCH + OU alone. Selectable in Advanced → Alt SDE Model.
+- **Berry Phase (Geometric Phase Proxy)** — Measures whether coherence trajectory forms closed loops. High phase = stable oscillating session. Low phase = drifted and never returned. Displayed in sidebar.
+- **Spin Hall Effect Coupling (Scalar Proxy)** — Simplified SOT switching model from spintronics. Variance acts as spin current, Kalman x̂ as magnetization state. θ_SH=0.20 (heavy metal analog). Positive torque = stabilizing. Displayed in sidebar.
+
+### Sidebar Additions
+All new signals displayed live: Berry Phase, SHE Torque (joined existing Lyapunov, PID, Mutual Info, Realized Vol, Fisher Info, LZ Complexity).
+
+---
+
+## [1.3.0] — 2026-04-15
+
+### New Math Modules
+- **PID Controller on variance** — Classical Proportional-Integral-Derivative control applied to smoothedVar as the process variable. P tracks current error, I accumulates drift history (anti-windup capped), D tracks acceleration. Output automatically escalates harness to MODERATE when PID > 2.0 at turn 3+. P/I/D/output displayed in sidebar.
+- **Mutual Information between turns** — Measures statistical dependence between current response and prior context. Stronger than JSD — MI captures when responses become statistically independent of the conversation. Low MI (< 0.30) is a drift risk indicator. Displayed in sidebar.
+- **Lyapunov Stability Bound** — Live computation of whether current SDE parameters guarantee convergence. For OU process: stable iff a_max = (α + β_p - δ·σ²)/(1+κ) < 0. Stability margin displayed as ✓ STABLE / ⚠ UNSTABLE with numeric margin in sidebar.
+- **Realized Volatility** — Rolling squared returns complement to GARCH. Faster-reacting variance estimate (window=8). Catches volatility spikes GARCH may lag. Displayed in sidebar.
+- **Kolmogorov Complexity Proxy** — LZ run-length encoding ratio as information density measure. High = complex/dense, Low = repetitive/compressible. Displayed as LZ Complexity in sidebar.
+- **Fisher Information** — Rate of change in score distribution per turn. Spike = sudden shift in response character. Normalized by variance. Displayed in sidebar.
+- **Lévy Flight Noise** — Heavier-tailed than Langevin. Models rare large behavioral jumps using Chambers-Mallows-Stuck method for α-stable distributions (default α=1.7). Toggle in FEATURES tab. When active, replaces Langevin in SDE noise term. κ stability index adjustable.
+
+### Bug Fixes
+- `kalmanHistory` missing from sendMessage deps — innovation whiteness check was using stale Kalman history.
+- `featIntegrityFloor` and `integrityThreshold` missing from sendMessage deps — Integrity Floor changes mid-session had no effect.
+- CIR simulation output not clamped — could produce negative values despite input guard.
+
+---
+
 ## [1.2.0] — 2026-04-15
 
 ### Bug Fixes
