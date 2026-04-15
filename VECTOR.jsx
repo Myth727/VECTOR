@@ -5591,6 +5591,7 @@ export default function VECTOR() {
     autoTuneEnabled,setAutoTuneEnabled,lastAutoTune,
     domainAnchor,setDomainAnchor,
     useEKF,setUseEKF,useParticle,setUseParticle,
+    levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
     berryPhase,sheTorque,
   }),[showTuning,activePreset,customConfig,userKappa,userAnchor,hudsonMode,
       featKalman,featGARCH,featSDE,featRAG,featPipe,featMute,featGate,
