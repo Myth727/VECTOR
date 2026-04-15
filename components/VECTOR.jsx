@@ -16,7 +16,7 @@ import {
 const _isVercel = typeof window !== "undefined" &&
   typeof window.location !== "undefined" &&
   (window.location.hostname.includes("vercel.app") ||
-   window.location.hostname.includes("myth727-vector"));
+   window.location.hostname.includes("vector2026"));
 const API_ENDPOINT = _isVercel ? "/api/proxy" : "https://api.anthropic.com/v1/messages";
 
 // ── Feature toggles ────────────────────────────────────────────
@@ -228,7 +228,7 @@ function simulateCIR(params,T=20,dt=0.02,nPaths=50,seed=42) {
     const path=new Float32Array(nSteps+1);path[0]=theta;
     for (let i=1;i<=nSteps;i++) {
       const x=Math.max(path[i-1],0);
-      path[i]=x+kappa*(theta-x)*dt+sigma*Math.sqrt(x)*Math.sqrt(dt)*randn(rng);
+      path[i]=Math.max(x+kappa*(theta-x)*dt+sigma*Math.sqrt(x)*Math.sqrt(dt)*randn(rng),0);
     }
     paths.push(path);
   }
@@ -4989,7 +4989,8 @@ export default function VECTOR() {
      postAuditThresh,
      livePaths,activeMutePhrases,
      pinnedDocs,sessionMemory,domainAnchor,
-     autoTuneEnabled,feedbackState,provider]);
+     autoTuneEnabled,feedbackState,provider,
+     kalmanHistory,featIntegrityFloor,integrityThreshold]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
 
