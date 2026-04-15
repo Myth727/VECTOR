@@ -150,7 +150,7 @@ const SDE_DELTA = 0.30;
 // Connection to VECTOR: replaces pure Gaussian dW_t with Langevin-weighted
 // increment, producing hardware-realistic stochastic uncertainty bands.
 // Cross-domain convergence: same math family as OU/SDE — not a coincidence.
-const MTJ_DELTA_DEFAULT = 50;
+const MTJ_DELTA_DEFAULT = 25;
 
 const SDE_PARAMS = {
   alpha:-0.25, beta_p:0.18, omega:2*Math.PI/12, sigma:0.10, kappa:KAPPA,
@@ -382,7 +382,7 @@ const PRESETS = {
   },
 };
 
-function updateSmoothedVariance(history, prev, cfg) {
+function updateSmoothedVariance(history, prev, cfg, entropy) {
   if (history.length<2) return prev??0;
   const recent=history.slice(-20);
   const mean=recent.reduce((s,v)=>s+v,0)/recent.length;
@@ -390,11 +390,13 @@ function updateSmoothedVariance(history, prev, cfg) {
   if (prev===null) return rawVar;
   const lastVal=history[history.length-1];
   const epsilon2=Math.pow(lastVal-mean,2);
-  // constants regardless of active preset, making GARCH preset tuning dead config.
   const gO=cfg?.garchOmega??GARCH_OMEGA;
   const gA=cfg?.garchAlpha??GARCH_ALPHA;
   const gB=cfg?.garchBeta??GARCH_BETA;
-  const garch=gO+gA*epsilon2+gB*prev;
+  // Entropy regularization: high-entropy responses (legitimate creative/exploratory content)
+  // dampen the GARCH innovation term to reduce false positive signal cascades.
+  const entropyWeight=(entropy!=null&&entropy>0.9)?0.5:1.0;
+  const garch=gO+(gA*epsilon2*entropyWeight)+gB*prev;
   const weight=Math.min(history.length/10,1);
   return weight*garch+(1-weight)*rawVar;
 }
@@ -491,7 +493,13 @@ function computeCoherence(newContent,history,weights,repThresh) {
   const rt=repThresh??0.65;
   const repetitionPenalty=overlap>rt?rt:1.0;
   const w=weights??{tfidf:0.25,jsd:0.25,length:0.25,structure:0.15,persistence:0.10};
-  return Math.min(Math.max((w.tfidf*vocab+w.jsd*jsdScore+w.length*lenScore+w.structure*struct+w.persistence*persist)*repetitionPenalty,.30),.99);
+  const rawScore=(w.tfidf*vocab+w.jsd*jsdScore+w.length*lenScore+w.structure*struct+w.persistence*persist)*repetitionPenalty;
+  // Bayesian prior: pull early-session scores toward 0.75 baseline — sparse data is noisy.
+  // Full weight at turn 10+. Before that, blends toward preset baseline.
+  const turnWeight=Math.min(ah.length/10,1.0);
+  const priorScore=0.75;
+  const blended=turnWeight*rawScore+(1-turnWeight)*priorScore;
+  return Math.min(Math.max(blended,.30),.99);
 }
 
 // ── Semantic Coherence — ──────────────────────────────────
@@ -637,7 +645,7 @@ const META_VECTOR_KNOWLEDGE = [
   "SYSTEM PROMPT ORDER",
   "BASE_SYSTEM + pinnedDocs + sessionMemory + HARNESS[mode] + RAG + pipe + gate + mute + rails + anchor",
   "",
-  "INTELLIGENCE LAYER",
+  "V2.2 INTELLIGENCE",
   "AutoTune: code(T=0.15) creative(T=1.15) analytical(T=0.40) conversational(T=0.75) chaotic(T=1.70)",
   "Feedback: EMA alpha=0.3, activates at 3 samples, max 50% influence at 20 samples",
   "Session Memory: auto-compress at turns 10/20/30 into protected system prompt slot",
@@ -1985,6 +1993,14 @@ const DisclaimerModal = React.memo(function DisclaimerModal({showDisclaimer,setS
               letterSpacing:1,fontWeight:"bold",flexShrink:0,marginLeft:16}}
             onClick={()=>{if(hudsonMode){setShowDisclaimer(false);setShowGuide(true);}}}>
             I ACCEPT — READ THE GUIDE FIRST
+          </button>
+          <button
+            style={{padding:"8px 14px",background:"none",border:"1px solid #A0B0C0",
+              borderRadius:4,color:"#6080A0",cursor:"pointer",
+              fontSize:9,fontFamily:"Courier New, monospace",
+              letterSpacing:1,marginLeft:8,flexShrink:0}}
+            onClick={()=>{setHudsonMode(false);setUserKappa(0.5);setShowDisclaimer(false);}}>
+            SKIP — USE STANDARD MODE
           </button>
         </div>
       </div>
@@ -4008,17 +4024,26 @@ export default function VECTOR() {
       setEmbedderStatus("loading");
       const worker = new Worker("/embedder.worker.js", { type: "module" });
       workerRef.current = { worker, ready: false };
+      // Fallback timeout: if not ready in 5s, permanently disable embedder path
+      const timeout = setTimeout(()=>{
+        if (!workerRef.current?.ready) {
+          setEmbedderStatus("error");
+          if (workerRef.current) workerRef.current.ready = false;
+        }
+      }, 5000);
       worker.onmessage = (e) => {
         if (e.data.type==="ready") {
+          clearTimeout(timeout);
           workerRef.current.ready = true;
           setEmbedderStatus("ready");
         } else if (e.data.type==="error" && !workerRef.current.ready) {
+          clearTimeout(timeout);
           setEmbedderStatus("error");
         } else if (e.data.type==="status") {
           setEmbedderStatus("loading");
         }
       };
-      worker.onerror = () => setEmbedderStatus("error");
+      worker.onerror = () => { clearTimeout(timeout); setEmbedderStatus("error"); };
       worker.postMessage({ type: "init" });
     } catch(e) {
       setEmbedderStatus("error");
@@ -4209,9 +4234,11 @@ export default function VECTOR() {
     if (!coherenceData.length&&!bookmarks.length) return;
     try {
         _storageSet("vector_data", JSON.stringify({
-          coherenceData,eventLog,errorLog,bookmarks,corrections, // P3+P5
+          coherenceData:coherenceData.slice(-200),
+          eventLog:eventLog.slice(-500),
+          errorLog,bookmarks,corrections,
           driftCount,turnCount,calmStreak,lock888Achieved,
-          smoothedVar,scoreHistory,ragCache,kalmanState,
+          smoothedVar,scoreHistory:scoreHistory.slice(-200),ragCache,kalmanState,
         }));
     } catch(e) { console.warn("vector: data save failed",e); }
   // R1 fix: added missing deps — calmStreak/smoothedVar/kalmanState/driftCount/turnCount
@@ -4634,7 +4661,7 @@ export default function VECTOR() {
         }
         setScoreHistory(newHist);
         newVar=featGARCH
-          ?updateSmoothedVariance(newHist,smoothedVar,cfg) // V1.5.3: pass cfg for preset GARCH params
+          ?updateSmoothedVariance(newHist,smoothedVar,cfg,hallucinationAssessment?.entropy)
           // Simple EMA fallback when GARCH off
           :(()=>{
             const mean=newHist.reduce((s,v)=>s+v,0)/newHist.length;
@@ -6305,7 +6332,7 @@ export default function VECTOR() {
               )}
               <div style={S.sectionTitle}>VARIANCE PIPE · MUTE · GATE</div>
               {/* V1.5.0: token estimate + session ID */}
-              {tokenEstimate>0&&(
+              {tokenEstimate>0&&turnCount>=2&&(
                 <div style={{marginBottom:8,padding:"4px 8px",borderRadius:3,
                   background:tokenEstimate>70000?"#FFF0F2":tokenEstimate>40000?"#F2F4F8":"#F2F4F8",
                   border:`1px solid ${tokenEstimate>70000?"#E0506044":tokenEstimate>40000?"#E8A03033":"#C8D8EC"}`}}>

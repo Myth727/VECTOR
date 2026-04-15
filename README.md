@@ -6,7 +6,7 @@
 
 © 2026 Hudson & Perry Research  
 **Authors:** David Hudson ([@RaccoonStampede](https://x.com/RaccoonStampede)) · David Perry ([@Prosperous727](https://x.com/Prosperous727))  
-**License:** MIT
+**License:** MIT · [Live Demo](https://vector2026.vercel.app/)
 
 > ⚠ RESEARCH & DEVELOPMENT — NOT FOR CLINICAL OR LEGAL USE.  
 > All outputs are mathematical proxy indicators. No warranty expressed or implied.
@@ -31,6 +31,44 @@ Detect instability → Inject correction (u_drift) → Repeat
 
 ---
 
+## What this solves
+
+Seven problems that affect every serious generative AI workflow:
+
+1. **Drift & Incoherence in Long Contexts** — LLMs wander, loop, confabulate. VECTOR quantifies it live and injects corrective directives automatically.
+2. **Unreliable Self-Reflection** — No reliance on the model to "check itself." External statistical harness enforces coherence.
+3. **Context Bloat & Token Waste** — Pruning + RAG + mute/gate keep prompts lean and relevant throughout long sessions.
+4. **Domain Mismatch** — Presets and tunables adapt tolerance to your context: tight for code/audit, looser for creative work.
+5. **Observability Black Box** — Dashboard, signals, exports, and session rewind provide audit trails and reproducibility.
+6. **Prompt Engineering Fatigue** — Pipes and harness automate the steering that normally requires manual system prompts every turn.
+7. **False Confidence in Outputs** — Proxy signals flag hype, sycophancy, and low-source replies. Post-audit catches quiet failures.
+
+---
+
+## ▶ Option 1 — Paste into Claude (instant, no setup)
+
+1. Download `VECTOR.jsx` from the root of this repo
+2. Open [claude.ai](https://claude.ai) and start a new conversation
+3. Paste: `Create an artifact from this file. Run it exactly as-is.` followed by the full file contents
+
+Works immediately. No account, no server, no install.
+
+---
+
+## ▶ Option 2 — Deploy on Vercel (any browser, cross-session memory)
+
+**Live demo:** [vector2026.vercel.app](https://vector2026.vercel.app/)
+
+1. Fork this repo
+2. Go to [vercel.com](https://vercel.com) → **Add New Project** → import your fork
+3. Vercel auto-detects Next.js → tap **Deploy**
+
+No environment variables needed. Users provide their own API keys.
+
+**Vercel adds:** Semantic embeddings (all-MiniLM-L6-v2 ONNX ~23MB) · Unscented Kalman Filter (UKF) · Multi-provider (Anthropic, OpenAI, Grok) · Cross-session persistence
+
+---
+
 ## How it works
 
 **Volatility measurement:**  
@@ -47,7 +85,7 @@ When volatility crosses thresholds, VECTOR fires signal detectors:
 All signals are proxy indicators. Honest framing enforced throughout.
 
 **Correction:**  
-When instability is detected, VECTOR injects a corrective directive into the next system prompt — `u_drift(t)` in the SDE framework. The injection is proportional to the instability state. AUDIT mode detects only. MODERATE adds light correction. DEEP CLEAN and EXTREME apply progressively stronger constraints.
+When instability is detected, VECTOR injects a corrective directive into the next system prompt — `u_drift(t)` in the SDE framework. AUDIT mode detects only. MODERATE adds light correction. DEEP CLEAN and EXTREME apply progressively stronger constraints.
 
 **The compressed pipe format:**
 ```
@@ -58,8 +96,6 @@ When instability is detected, VECTOR injects a corrective directive into the nex
 ---
 
 ## The Math
-
-Built on established frameworks borrowed from physics, aerospace, and quantitative finance.
 
 | Component | Origin | Function in VECTOR |
 |---|---|---|
@@ -74,21 +110,19 @@ Built on established frameworks borrowed from physics, aerospace, and quantitati
 ```
 dε(t) = a(t)ε(t)dt + b·dW_t
 a(t) = (α + β_p·sin(ωt)) / (1+κ)
-κ = 0.444 (Hudson Constant, fixed)
+κ = 0.444 (Hudson Constant) or 0.500 (Standard) — user-selected
 ```
 
 ---
 
 ## Langevin Noise Extension
 
-The Wiener process in the SDE uses a Langevin-weighted noise draw:
-
 ```
 dW_t = b · √dt · z · η
 η = √(1 + 1/(2Δ))
 ```
 
-Δ (MTJ_DELTA) is the thermal stability factor from magnetic tunnel junction physics — Neel-Brown relaxation model (Brown 1963; Koch et al. 2000). Default Δ=50. At low Δ (10–25) the noise becomes meaningfully heavier-tailed, producing wider and more asymmetric Monte Carlo uncertainty bands in high-volatility regimes.
+Δ (MTJ_DELTA) is the thermal stability factor from magnetic tunnel junction physics — Neel-Brown relaxation model (Brown 1963; Koch et al. 2000). Default Δ=25. Toggle ON/OFF in FEATURES tab.
 
 **Honest framing:** The Langevin math is physically grounded. The direct empirical link between MTJ parameters and generative output coherence is theoretical — same mathematical family, not yet co-validated against actual hardware.
 
@@ -98,14 +132,43 @@ dW_t = b · √dt · z · η
 
 | Feature | What it does |
 |---|---|
-| **AutoTune** | Detects session context per turn (code/creative/analytical/conversational/chaotic), selects optimal generation parameters automatically |
+| **AutoTune** | Detects session context per turn, selects optimal generation parameters automatically |
 | **Feedback Loop** | +1/−1 per response. EMA learning personalizes AutoTune profiles. Persists across sessions. |
 | **Reflexive Analysis** | Sends session volatility fingerprint for analysis → returns prioritized config suggestions |
-| **Knowledge Anchors** | Domain vocabulary (Medical, Legal, Engineering, Finance, Research) calibrates signal detection to your field |
-| **Persistent Doc Slots** | 3 pinned documents — injected every turn before harness, never pruned, never forgotten |
+| **Knowledge Anchors** | Domain vocabulary (Medical, Legal, Engineering, Finance, Research) calibrates signal detection |
+| **Persistent Doc Slots** | 3 pinned documents — injected every turn, never pruned, never forgotten |
 | **Session Memory** | Auto-compresses history at turns 10/20/30. Solves long-session context loss. |
-| **META Panel** | Second analysis chat with full VECTOR architecture + live session data embedded. |
-| **Quick Tools Drawer** | CALC (SDE/GARCH parameter calculator + expression evaluator), VERIFY (15 live session checks), EXPORT (CSV/JSONL/TXT) |
+| **META Panel** | Second analysis chat with full VECTOR architecture + live session data embedded |
+| **Quick Tools Drawer** | CALC (SDE/GARCH calculator), VERIFY (15 live session checks), EXPORT (CSV/JSONL/TXT) |
+
+---
+
+## Feature Comparison
+
+| Feature | Claude artifact | Vercel |
+|---|:---:|:---:|
+| TF-IDF + JSD scoring | ✓ | ✓ fallback |
+| Semantic embeddings (all-MiniLM-L6-v2) | — | ✓ |
+| Linear Kalman filter | ✓ | — |
+| Unscented Kalman Filter (UKF) | — | ✓ |
+| GARCH(1,1) + jump-diffusion | ✓ | ✓ |
+| Monte Carlo SDE bands | ✓ | ✓ |
+| Langevin/MTJ noise model | ✓ | ✓ |
+| AutoTune | ✓ | ✓ |
+| Feedback loop (EMA learning) | ✓ | ✓ |
+| Reflexive session analysis | ✓ | ✓ |
+| Knowledge Anchors | ✓ | ✓ |
+| Persistent Document Slots | ✓ session | ✓ cross-session |
+| Strategic Session Memory | ✓ session | ✓ cross-session |
+| META Panel | ✓ | ✓ |
+| Quick Tools (CALC/VERIFY/EXPORT) | ✓ | ✓ |
+| Display preferences (themes, font, compact) | ✓ | ✓ |
+| H-signals + B-signals | ✓ | ✓ |
+| Session rewind, RAG, bookmarks | ✓ | ✓ |
+| Integrity Floor | ✓ | ✓ |
+| Multi-provider (OpenAI, Grok) | — | ✓ |
+| API key persistence | — | ✓ |
+| Works without Claude account | — | ✓ |
 
 ---
 
@@ -140,6 +203,42 @@ dW_t = b · √dt · z · η
 - MHT Study (Metatron-Hudson Theory SDE)
 - Poole Manifold CA Simulator (3D cellular automaton, full adder verification)
 - Integrity Floor (DRIFT vs INTEGRITY BREACH detection)
+
+---
+
+## SDK
+
+```typescript
+import { computeCoherence, kalmanStep,
+  updateSmoothedVariance, buildPipeInjection,
+  PRESETS } from './sdk/index';
+
+const cfg    = PRESETS.CIRCUIT;
+const score  = computeCoherence(response, history);
+const newVar = updateSmoothedVariance(scoreHistory, prev, cfg);
+const kalman = kalmanStep(state, score, turn * (2*Math.PI/12), SDE_PARAMS);
+const pipe   = buildPipeInjection(newVar, kalman.x, kalman.P,
+  calmStreak, driftCount, 'audit', turn, 0, 0, null, cfg);
+```
+
+---
+
+## Project Structure
+
+```
+VECTOR.jsx                 ← paste into Claude
+components/VECTOR.jsx      ← same file, used by Next.js
+pages/api/proxy.ts         ← multi-provider proxy (Anthropic · OpenAI · Grok)
+pages/index.tsx            ← Next.js entry
+public/embedder.worker.js  ← neural embedding Web Worker (Vercel only)
+sdk/*.ts                   ← TypeScript math library
+evals/VECTOR_EVALS.md      ← 15-check release checklist
+ai/knowledge/
+  DIALOGUE_BASELINES.md
+  HALLUCINATION_REFERENCE.md
+  VECTOR_CODING_RULES.md
+  DOCUMENT_INTELLIGENCE.md
+```
 
 ---
 
