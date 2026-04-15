@@ -13,6 +13,68 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.5.3] — 2026-04-15
+
+### Deep Audit — Full Systematic Fix Pass
+
+**Root cause confirmed (V1.5.2 continuation):** Setter functions were present in `JSON.stringify()` config save across the entire file, not just the two reported toggles. The previous fix only patched the surface — this pass did a full sweep.
+
+**All config saves audited and cleaned:**
+- `vector_config` save: all setter functions removed. Only state values serialized.
+- All other `_storageSet` calls verified clean.
+
+**Config restore gaps fixed:**
+- `autoTuneEnabled`, `caPassRate`, `domainAnchor`, `lastAutoTune` were saved but never restored. Added restore handlers for all four — these settings were silently resetting to defaults on every reload.
+
+**TuneModal context audit:**
+- `setDisplayPrefs`, `setOn`, `setRewindConfirm` flagged by audit — confirmed legitimate non-context uses (local state, loop var, prop). Not bugs.
+- All other setters used in TuneModal confirmed present in TuneCtx.
+
+---
+
+## [1.5.2] — 2026-04-15
+
+### Bug Fix (root cause of stuck toggles)
+- **Setter functions serialized into config save** — `setSdeAlphaVal`, `setMtjEnabled`, `setMtjDelta`, `setSdeSigmaOn` and others were accidentally included in the `JSON.stringify()` config save. `JSON.stringify` silently drops function values, corrupting the saved object. On restore, `mtjEnabled` and similar state was being read back as `undefined`, overwriting the `useState(true)` default with falsy. This is why Langevin and Integrity Floor appeared stuck — they were being reset to false on every load. All setters removed from config save and from tuneCtxValue deps array.
+
+---
+
+## [1.5.1] — 2026-04-15
+
+### Bug Fixes
+- **Langevin noise toggle stuck OFF** — `setMtjEnabled` and `setMtjDelta` were missing from `tuneCtxValue` object. Toggle rendered but had no setter. Fixed.
+- **Integrity Floor toggle stuck OFF** — `setFeatIntegrityFloor`, `setShowIntegrityFloor`, `setIntegrityThreshold` missing from `tuneCtxValue` object. Same root cause. Fixed.
+- **SDE param sliders unresponsive** — `setSdeAlphaVal`, `setSdeBetaVal`, `setSdeSigmaVal` and their on/off toggles missing from context value. Fixed.
+- Full audit of TuneModal destructuring vs tuneCtxValue — all mismatches resolved.
+
+---
+
+## [1.5.0] — 2026-04-15
+
+### Meta-Harness Integration
+*Adapted from Lee, Nair, Zhang, Lee, Khattab & Finn (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. Stanford IRIS Lab. arXiv:2603.28052.*
+
+**In-browser (VECTOR.jsx):**
+- **Structured Reflexive Analysis** — Completely rebuilt. Now returns exactly 3 candidates per analysis, each with: hypothesis (falsifiable), axis (A=ScoringMechanism, B=HarnessThresholds, C=InjectionStrategy, D=SignalDetection, E=NoiseModel, F=KalmanVariant), exploitation/exploration type, mechanism_change (not parameter tuning), enable_modules, predicted_delta. Anti-parameter-tuning rules enforced in prompt — parameter-only suggestions explicitly rejected.
+- **Frontier Tracker** — `vector_frontier` localStorage key tracks best avg C-score per AutoTune context type (code/creative/analytical/conversational/chaotic). Updated automatically after Reflexive Analysis and on positive RLHF feedback.
+- **Evolution History** — `vector_evolution` localStorage key persists all proposed and applied candidates as JSONL. Passed to Reflexive Analysis so it avoids repeating the same axis.
+- **Evolution Logging on Drift** — Every drift event logs a structured evolution entry (preset, avg_c, delta, axis, outcome) for offline analysis.
+- **Evolution Summary Export** — EXPORT tab now includes "JSONL — Evolution Summary" button. Outputs Meta-Harness compatible JSONL + frontier JSON.
+- **Upgraded Candidate Display** — Reflexive Analysis results now show axis label, exploitation/exploration type, predicted delta, mechanism change description, and modules to enable. Color-coded by type and priority.
+
+**Offline Tools (`tools/`):**
+- **`vector_harness.py`** — Offline VECTOR scoring engine. Runs full TF-IDF+JSD+Kalman+GARCH scoring on a transcript JSON without a browser. Outputs per-turn C-scores, variance states, drift events, health score.
+- **`meta_loop.py`** — Autonomous evolution loop. Scores baseline → proposes 3 candidates via Claude → scores each → updates frontier → repeats N iterations. Direct port of Meta-Harness run_evolve() pattern.
+- **`frontier.py`** — CLI frontier tracker. Shows best known config per preset, evolution history, axis distribution, win rate.
+- **`domain_spec.md`** — Onboarding template (adapted from Meta-Harness ONBOARDING.md). Fill out before running the evolution loop.
+- **`requirements.txt`** — anthropic, python-dotenv.
+
+### Framing Update
+- VECTOR is now explicitly framed as a controller for **any sequential generative process**, not LLM-only. Applies equally to software pipelines, robotics, scientific simulations, financial modeling.
+- README updated with Meta-Harness integration section and proper attribution.
+
+---
+
 ## [1.4.2] — 2026-04-15
 
 ### Bug Fix
