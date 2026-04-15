@@ -2463,6 +2463,24 @@ const DisclaimerModal = React.memo(function DisclaimerModal({showDisclaimer,setS
             onClick={()=>{setHudsonMode(false);setUserKappa(0.5);setShowDisclaimer(false);}}>
             SKIP — USE STANDARD MODE
           </button>
+          <button
+            style={{padding:"6px 10px",background:"none",border:"1px solid #C8103040",
+              borderRadius:4,color:"#C81030",cursor:"pointer",
+              fontSize:8,fontFamily:"Courier New, monospace",
+              letterSpacing:1,marginLeft:8,flexShrink:0}}
+            onClick={()=>{
+              try{
+                ["vector_config","vector_data","vector_fb","vector_dp",
+                 "vector_pinned","vector_mem","vector_api_key","vector_provider",
+                 "vector_frontier","vector_evolution"].forEach(k=>{
+                  try{localStorage.removeItem(k);}catch(e){}
+                  try{if(window.storage)window.storage.delete(k);}catch(e){}
+                });
+              }catch(e){}
+              window.location.reload();
+            }}>
+            CLEAR STORAGE
+          </button>
         </div>
       </div>
     </div>
@@ -4639,6 +4657,10 @@ export default function VECTOR() {
         if (p.levyAlpha!=null)         setLevyAlpha(p.levyAlpha);
         if (p.useEKF!=null)            setUseEKF(p.useEKF);
         if (p.useParticle!=null)       setUseParticle(p.useParticle);
+        if (p.autoTuneEnabled!=null)   setAutoTuneEnabled(p.autoTuneEnabled);
+        if (p.caPassRate!=null)        setCaPassRate(p.caPassRate);
+        if (p.domainAnchor!=null)      setDomainAnchor(p.domainAnchor);
+        if (p.lastAutoTune!=null)      setLastAutoTune(p.lastAutoTune);
         if (p.sdeBetaVal!=null)         setSdeBetaVal(p.sdeBetaVal);
         if (p.sdeSigmaVal!=null)        setSdeSigmaVal(p.sdeSigmaVal);
         if (p.sdeAlphaOn!=null)         setSdeAlphaOn(p.sdeAlphaOn);
@@ -4723,19 +4745,22 @@ export default function VECTOR() {
           featMute,featGate,featBSig,featHSig,featPrune,featZeroDrift,
           adaptiveSigmaOn,adaptationRate,adaptedSigma,
           nPaths,postAuditMode,customMutePhrases,researchNotes,
-          mathEpsilon, // V1.5.3 fix #6: persist user-tuned epsilon
-          // P1 fix: coherence weights + math tunables were missing — reset to defaults on reload
+          mathEpsilon,
           mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
           mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-          sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
+          sdeAlphaVal,sdeBetaVal,sdeSigmaVal,
+          sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
+          mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
           postAuditThresh,showSdePaths,pathOpacity,
-          // Advanced Tab
-          advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
+          advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
+          showMhtStudy,showPoole,caPassRate,
+          pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,
           showIntegrityFloor,featIntegrityFloor,integrityThreshold,
           mhtPsi,mhtKappa,mhtTau,mhtGamma,mhtCap,mhtAlpha,mhtBeta,mhtSigma,
           userRailsEnabled,userCustomRails,sdeModel,
-      autoTuneEnabled,lastAutoTune,domainAnchor,
-          cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
+          autoTuneEnabled,lastAutoTune,domainAnchor,
+          cirKappa,cirTheta,cirSigma,
+          hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
         }));
     } catch(e) { console.warn("vector: config save failed",e); }
   },[harnessMode,activePreset,customConfig,userKappa,userAnchor,hudsonMode,
@@ -4745,7 +4770,9 @@ export default function VECTOR() {
      nPaths,postAuditMode,customMutePhrases,researchNotes,mathEpsilon,
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
+     sdeAlphaVal,setSdeAlphaVal,sdeBetaVal,setSdeBetaVal,sdeSigmaVal,setSdeSigmaVal,
+    sdeAlphaOn,setSdeAlphaOn,sdeBetaOn,setSdeBetaOn,sdeSigmaOn,setSdeSigmaOn,
+    mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,showSdePaths,pathOpacity,
      advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,
      caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
@@ -5518,7 +5545,9 @@ export default function VECTOR() {
      // only used in UI rendering. Was causing unnecessary callback invalidation.
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
+     sdeAlphaVal,setSdeAlphaVal,sdeBetaVal,setSdeBetaVal,sdeSigmaVal,setSdeSigmaVal,
+    sdeAlphaOn,setSdeAlphaOn,sdeBetaOn,setSdeBetaOn,sdeSigmaOn,setSdeSigmaOn,
+    mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,
      livePaths,activeMutePhrases,
      pinnedDocs,sessionMemory,domainAnchor,
@@ -5703,13 +5732,17 @@ export default function VECTOR() {
     domainAnchor,setDomainAnchor,
     useEKF,setUseEKF,useParticle,setUseParticle,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
+    mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,
+    showIntegrityFloor,setShowIntegrityFloor,featIntegrityFloor,setFeatIntegrityFloor,
+    integrityThreshold,setIntegrityThreshold,integrityBreachCount,
     berryPhase,sheTorque,
     evolutionHistory,setEvolutionHistory,vectorFrontier,setVectorFrontier,
   }),[showTuning,activePreset,customConfig,userKappa,userAnchor,hudsonMode,
       featKalman,featGARCH,featSDE,featRAG,featPipe,featMute,featGate,
       featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,postAuditThresh,
       adaptiveSigmaOn,adaptedSigma,adaptationRate,
-      sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
+      sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
+      mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
       customMutePhrases,mutePhraseInput,
       mathEpsilon,mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
       mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
@@ -5717,7 +5750,8 @@ export default function VECTOR() {
       advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
       showMhtStudy,mhtPsi,mhtKappa,mhtTau,mhtGamma,mhtCap,mhtAlpha,mhtBeta,mhtSigma,
       showPoole,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,caPassRate,
-      showIntegrityFloor,featIntegrityFloor,integrityThreshold,integrityBreachCount,
+      showIntegrityFloor,setShowIntegrityFloor,featIntegrityFloor,setFeatIntegrityFloor,
+    integrityThreshold,setIntegrityThreshold,integrityBreachCount,
       userRailsEnabled,userCustomRails,sdeModel,
       cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
       useEKF,useParticle,berryPhase,sheTorque,
@@ -7371,39 +7405,4 @@ export default function VECTOR() {
 
       {/* R&D DISCLAIMER MODAL — shown on load */}
       <DisclaimerModal
-        showDisclaimer={showDisclaimer}
-        setShowDisclaimer={setShowDisclaimer}
-        setShowGuide={setShowGuide}
-        hudsonMode={hudsonMode}
-        setHudsonMode={setHudsonMode}
-        setUserKappa={setUserKappa}/>
-
-      {/* TUNE MODAL — Presets, Feature Toggles, Custom Config */}
-      <TuneModal />
-
-      {/* REWIND CONFIRM MODAL */}
-      {/* REWIND CONFIRM MODAL */}
-      <RewindConfirmModal
-        rewindConfirm={rewindConfirm}
-        setRewindConfirm={setRewindConfirm}
-        restoreToTurn={restoreToTurn}
-      />
-
-      {/* LOG MODAL */}
-      <LogModal />
-
-      {/* BOOKMARKS MODAL */}
-      <BookmarksModal />
-
-      {/* GUIDE MODAL */}
-      <GuideModal
-        showGuide={showGuide}
-        setShowGuide={setShowGuide}
-        guideTab={guideTab}
-        setGuideTab={setGuideTab}
-      />
-    </div>
-    </SessionCtx.Provider>
-    </TuneCtx.Provider>
-  );
-}
+        showDisclaimer={showDis
