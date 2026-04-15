@@ -282,3 +282,25 @@ github.com/Myth727/VECTOR
 ---
 
 *© 2026 Hudson & Perry Research — Experimental R&D. All outputs are proxy indicators.*
+
+## Meta-Harness Integration
+
+VECTOR's evolution and optimization layer is adapted from the Meta-Harness framework.
+
+> Lee, Nair, Zhang, Lee, Khattab & Finn (2026).  
+> *Meta-Harness: End-to-End Optimization of Model Harnesses.*  
+> Stanford IRIS Lab. arXiv:2603.28052.
+
+**Concepts borrowed:**
+- 3-candidate structured proposal per analysis iteration
+- Exploitation/exploration axis taxonomy
+- Anti-parameter-tuning enforcement (mechanism changes > parameter sweeps)
+- Frontier tracking (best configuration per context type)
+- Evolution summary JSONL logging format
+
+**VECTOR's contribution beyond Meta-Harness:**
+- Real-time live correction (not offline search)
+- Full mathematical engine: SDE + GARCH + Kalman + PID + physics modules
+- Browser-deployable single-file architecture
+- Application to any sequential generative process, not just agent scaffolds
+
