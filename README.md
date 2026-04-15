@@ -105,6 +105,14 @@ When instability is detected, VECTOR injects a corrective directive into the nex
 | TF-IDF + JSD | Information theory / NLP | Measures lexical shift and semantic drift per turn |
 | Pipe injection | Control theory | u_drift(t) — corrective force applied to next output |
 | Langevin noise | Spintronics / MTJ physics | Hardware-realistic stochastic uncertainty bands |
+| Lévy flight noise | α-stable distributions | Heavy-tail noise for rare large behavioral jumps |
+| PID controller | Classical control theory | Proportional-Integral-Derivative on variance |
+| EKF / Particle Filter | Aerospace / robotics | Nonlinear and non-Gaussian state estimation |
+| Berry phase | Quantum geometry | Geometric phase of coherence trajectory |
+| Spin Hall Effect | Spintronics | Torque coupling between variance and Kalman state |
+| Mutual information | Information theory | Statistical dependence between turns |
+| Realized volatility | Quantitative finance | Fast-reacting variance complement to GARCH |
+| Lyapunov bound | Dynamical systems | Live stability guarantee of SDE parameters |
 
 **Core equation:**
 ```
@@ -142,6 +150,7 @@ dW_t = b · √dt · z · η
 | **Quick Tools Drawer** | CALC (SDE/GARCH calculator), VERIFY (15 live session checks), EXPORT (CSV/JSONL/TXT) |
 | **Demo Mode** | Run any prompt with and without VECTOR correction side by side. C-score differential shows exactly what the harness changes. |
 | **RLHF→SDE Bridge** | -1 ratings on drifted turns feed back into the SDE sigma parameter — the engine learns from confirmed correction failures. |
+| **Advanced Math Sidebar** | Live readout of Lyapunov stability bound, PID output, Realized Volatility, Mutual Information, Fisher Information, LZ Complexity, Berry Phase, SHE Torque. |
 
 ---
 
@@ -196,9 +205,26 @@ dW_t = b · √dt · z · η
 
 ---
 
+## Optional Physics & Control Modules
+
+Toggleable in **TUNE → FEATURES**. All default OFF — enable only what you need.
+
+| Module | Toggle | What it does |
+|--------|--------|-------------|
+| Lévy Flight Noise | FEATURES tab | Replaces Langevin with α-stable heavy-tail noise (α=1.7). Models rare large behavioral jumps. |
+| Extended Kalman Filter | FEATURES tab | Nonlinear Jacobian linearization. More accurate than linear Kalman for OU dynamics. |
+| Particle Filter | FEATURES tab | 200-particle Sequential Monte Carlo. Handles non-Gaussian, multimodal drift. Blends with Kalman. |
+
+Selectable in **TUNE → ADVANCED → Alt SDE Model**:
+CIR · Heston · Vasicek · SABR · DEFAULT (OU)
+
+All sidebar math metrics (Lyapunov, PID, Realized Vol, Mutual Info, Fisher Info, LZ Complexity, Berry Phase, SHE Torque) always computed and displayed — no toggle needed, no performance cost.
+
+---
+
 ## Advanced / Experimental (opt-in, consent required)
 
-- Alt SDE Models (CIR, Heston stochastic volatility) — fully implemented, selectable in Advanced tab
+- Alt SDE Models (CIR, Heston, Vasicek, SABR) — fully implemented, selectable in Advanced tab
 - Custom behavioral rails
 - Stability convergence panel (RESONANCE_ANCHOR = 623.81 Hz)
 - Edit constants (κ, ε, GARCH params)
