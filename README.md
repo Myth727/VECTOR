@@ -215,6 +215,7 @@ Toggleable in **TUNE → FEATURES**. All default OFF — enable only what you ne
 | Lévy Flight Noise | FEATURES tab | Replaces Langevin with α-stable heavy-tail noise (α=1.7). Models rare large behavioral jumps. |
 | Extended Kalman Filter | FEATURES tab | Nonlinear Jacobian linearization. More accurate than linear Kalman for OU dynamics. |
 | Particle Filter | FEATURES tab | 200-particle Sequential Monte Carlo. Handles non-Gaussian, multimodal drift. Blends with Kalman. |
+| StableDRL Mode | FEATURES tab | Unconditional score clipping + self-normalizing injection. Prevents over-correction feedback loops. Default ON. (Li et al. 2026) |
 
 Selectable in **TUNE → ADVANCED → Alt SDE Model**:
 CIR · Heston · Vasicek · SABR · DEFAULT (OU)
