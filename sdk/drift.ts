@@ -116,3 +116,83 @@ export function applyZeroDriftLock(
     residual: Math.abs(val - anchor),
   };
 }
+
+// ── PID Controller on Variance ────────────────────────────────
+/**
+ * Classical P-I-D applied to smoothedVar as process variable.
+ * Output > 2.0 indicates over-correction risk — harness should escalate.
+ * Reference: Åström & Hägglund (1995).
+ */
+export interface PIDResult {
+  p: number; i: number; d: number; output: number; error: number;
+}
+const PID_KP = 1.20, PID_KI = 0.08, PID_KD = 0.40, PID_TARGET = 0.080;
+
+export function computePIDCorrection(varHistory: number[]): PIDResult {
+  if (!varHistory || varHistory.length < 2)
+    return { p: 0, i: 0, d: 0, output: 0, error: 0 };
+  const current = varHistory[varHistory.length - 1];
+  const prev    = varHistory[varHistory.length - 2];
+  const error   = current - PID_TARGET;
+  const p       = PID_KP * error;
+  const window  = varHistory.slice(-8);
+  const integral = window.reduce((s, v) => s + (v - PID_TARGET), 0) / window.length;
+  const i       = Math.max(-1.0, Math.min(1.0, PID_KI * integral));
+  const d       = PID_KD * (current - prev);
+  const output  = Math.max(0, Math.min(3.0, 1.0 + p + i + d));
+  return { p, i, d, output, error };
+}
+
+// ── Realized Volatility ───────────────────────────────────────
+/**
+ * Rolling squared returns — faster-reacting complement to GARCH.
+ * RV_t = (1/n) Σ (score[i] − score[i−1])²
+ * Reference: Andersen & Bollerslev (1998).
+ */
+export function computeRealizedVolatility(
+  scoreHistory: number[],
+  window = 8
+): number | null {
+  if (scoreHistory.length < 3) return null;
+  const recent = scoreHistory.slice(-Math.min(window, scoreHistory.length));
+  if (recent.length < 2) return null;
+  const returns: number[] = [];
+  for (let i = 1; i < recent.length; i++)
+    returns.push(Math.pow(recent[i] - recent[i - 1], 2));
+  return returns.reduce((s, v) => s + v, 0) / returns.length;
+}
+
+// ── StableDRL Clipping ────────────────────────────────────────
+/**
+ * Unconditional score clipping + self-normalizing variance scaling.
+ * Prevents over-correction feedback loops by treating every proxy
+ * signal as having inherent error.
+ * Reference: Li et al. (2026) StableDRL, arXiv (via @sheriyuo).
+ */
+const SDRL_VAR_CLIP   = 3.0;
+const SDRL_JSD_CLIP   = 0.85;
+const SDRL_NORM_FLOOR = 0.50;
+const SDRL_NORM_WIN   = 8;
+
+export function stabledrlClipScore(
+  rawScore: number,
+  prevScore: number | null
+): number {
+  if (prevScore == null || prevScore < 0.01) return rawScore;
+  const ratio = rawScore / prevScore;
+  let clipped = rawScore;
+  if (ratio > SDRL_VAR_CLIP) clipped = prevScore * SDRL_VAR_CLIP;
+  if (ratio < 1 / SDRL_VAR_CLIP) clipped = prevScore / SDRL_VAR_CLIP;
+  return Math.min(Math.max(clipped, 0.30), 0.99);
+}
+
+export function stabledrlNormalizeVar(
+  smoothedVar: number,
+  scoreHistory: number[]
+): number {
+  if (scoreHistory.length < 2) return smoothedVar;
+  const win = scoreHistory.slice(-SDRL_NORM_WIN);
+  const clippedSum = win.reduce((s, v) => s + Math.min(v, SDRL_JSD_CLIP), 0);
+  const normFactor = Math.max(clippedSum / win.length, SDRL_NORM_FLOOR);
+  return smoothedVar / normFactor;
+}
