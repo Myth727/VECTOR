@@ -48,6 +48,223 @@ Document H-signal and B-signal counts across matched sessions in normal vs priva
 
 ---
 
+## Phase A/B Execution Plan — ChatGPT Cathedral (logged April 16, 2026)
+
+Source: ChatGPT Cathedral Option 3 derivation response.
+Full A, Q, H, R estimation pipeline for the VECTOR state-space model.
+
+---
+
+### Labeled Sample Format (exact spec)
+
+```
+sample_i:
+  id: string
+  length: T
+  observations:
+    t: 1…T
+    y_t:
+      C_t: float       ← coherence score
+      sigma2_t: float  ← GARCH variance
+      k_t: float       ← Kalman estimate
+      H_t: int         ← hallucination signal count
+      B_t: int         ← behavioral signal count
+  label:
+    class: normal | degraded | failure
+  metadata:
+    domain: string
+    source: human | synthetic
+```
+
+Label applies to entire session trajectory, NOT per-message.
+
+---
+
+### Minimum Viable Dataset
+
+- Absolute minimum: N=100 sessions, T_avg ≥ 50 turns
+- Recommended: N≥300, balanced 100/100/100 normal/degraded/failure
+- Synthetic data: allowed for initial estimation and pipeline debugging only
+- Synthetic ratio must not exceed 0.50
+- Synthetic data NOT valid for final calibration or probability estimation
+
+---
+
+### EM Algorithm — A, Q, H, R Estimation
+
+State-space model:
+  x_{t+1} = A x_t + w_t    (w_t ~ N(0,Q))
+  y_t     = H x_t + v_t    (v_t ~ N(0,R))
+
+Initialization:
+  A₀ = Identity (5x5)
+  Q₀ = 0.01 * I
+  H₀ = Identity
+  R₀ = 0.05 * I
+
+E-step: Run Kalman Filter + RTS Smoother per session
+  - Forward: x̂_t|t, P_t|t
+  - Backward: x̂_t|T, P_t|T, P_t,t-1|T (cross-covariance)
+
+M-step updates:
+  A = (Σ E[x_t x_{t-1}ᵀ]) (Σ E[x_{t-1} x_{t-1}ᵀ])⁻¹
+  Q = (1/(T-1)) Σ E[(x_t - A x_{t-1})(x_t - A x_{t-1})ᵀ]
+  H = (Σ y_t x_tᵀ)(Σ x_t x_tᵀ)⁻¹
+  R = (1/T) Σ (y_t - H x_t)(y_t - H x_t)ᵀ
+
+Iterate E+M until log-likelihood converges. Typical: 10–30 iterations.
+
+Python stack: numpy + pykalman (KalmanFilter.em())
+
+---
+
+### z_t Readiness Criteria
+
+z_t = || W x̂_t || (scalar instability/drift energy)
+
+Do NOT surface z_t on dashboard until ALL THREE are true:
+  1. EM converged (ΔlogL < ε)
+  2. Residuals ~ white noise
+  3. State covariance stable (no explosion)
+
+Before that: z_t is classified as SPECULATIVE SIGNAL.
+Minimum viable display: N ≥ 100 sessions + model converged.
+
+---
+
+### Mandatory Enforcement Before Phase C
+
+```python
+assert spectral_radius(A) < 1.0   # unstable A = exploding states
+assert det(Q) > 0                  # degenerate Q = frozen dynamics
+assert det(R) > 0                  # ill-conditioned observation model
+```
+
+Fail any check → REJECT MODEL, do not proceed to Phase C.
+
+---
+
+### Failure Modes to Watch
+
+1. Unstable A: eigenvalues > 1 → exploding states
+2. Degenerate Q: zero variance → frozen dynamics
+3. Ill-conditioned H: unobservable states
+4. Overfit to synthetic: zero real-world transfer
+
+---
+
+### Execution Steps
+
+1. Log sessions → JSON format per spec above
+2. Build dataset (N ≥ 100 minimum)
+3. Run EM → estimate A, Q, H, R
+4. Validate residuals + stability (enforce checks)
+5. Compute z_t — keep internal, not user-facing yet
+6. Expand dataset → Phase C (probability mapping)
+
+---
+
+### Phase C — Probability Mapping (when Phase B complete)
+
+P(failure | x_t) via logistic regression:
+  P = σ(βᵀ x_t)  where β learned from labeled data
+
+Upgrade path:
+  Level 1: Logistic regression
+  Level 2: Gaussian mixture model
+  Level 3: Bayesian state estimator
+
+Dashboard must eventually show: z_t, P(failure), confidence interval
+
+---
+
+### Exponential Blending — V1.7.0 (from Q1 resolution)
+
+Replace current linear turnWeight ramp with:
+  α(t) = 1 - exp(-t / τ)
+  score = α(t) * rawScore * penalty + (1 - α(t)) * prior
+
+Initial τ = 5. Tune against session data.
+Strictly dominates both current implementation and ChatGPT's
+original suggestion. Smooth continuous transition, no hard cutoff.
+Balances G1 (early stabilization) and G2 (anomaly sensitivity).
+
+---
+
+## ChatGPT Cathedral Audit Findings (logged April 16, 2026)
+
+Source: ChatGPT Cathedral deep audit of VECTOR V1.6.0
+Status per finding after independent verification:
+
+### CONFIRMED BUGS — fix next session
+
+**Q3 — CIR Feller Condition (CRITICAL)**
+No guard at parameter input UI. User can set values violating 2κθ ≥ σ².
+The Math.max clamp fixes output but not dynamics — non-ergodic behavior,
+variance collapse artifacts. Fix: enforce Feller at slider input, reject
+invalid configs with visible warning.
+
+**Q5 — CIR/OU Scale Mismatch (HIGH)**
+CIR paths start at theta (~0.10), OU paths start near 0. Shared drift
+formula lo_band = kalman.x + pcts.p10 * 0.15 produces different meanings
+per model. Causes false drift events under CIR. Fix: normalize all
+processes z_norm = (z - μ_process) / σ_process before percentile calc.
+
+**Q6 — RLHF Bridge Gate (DESIGN FLAW)**
+RLHF→SDE adaptation gated on adaptiveSigmaOn. These are orthogonal
+concerns — RLHF feedback should not be silenced when sigma adaptation
+is off. Creates a hidden dead zone. Fix: decouple RLHF update from
+sigma adaptation toggle entirely.
+
+**Q7 — Demo Baseline Contamination (INVALID EVALUATION)**
+sendDemoBaseline scores against full VECTOR-corrected session history.
+This is data leakage — the comparison is not independent. Fix: score
+baseline against user messages only, no corrected assistant turns.
+
+### CONFIRMED ISSUES — medium priority
+
+**Q4 — Heston Euler-Maruyama Absorption Bias (MEDIUM)**
+Math.max(..., 0) clamp introduces known downward bias in variance.
+Percentile bands shrink, drift threshold tightens artificially.
+Fix: implement Full Truncation scheme or QE (Quadratic Exponential)
+method. Not critical for display use case but affects research validity.
+
+**Q8 — Unbounded In-Memory Growth (PERFORMANCE)**
+Storage capped at 200 turns, in-memory arrays uncapped. Estimated
+500–1000 turns before visible mobile lag. Fix: ring buffer on
+coherenceData, eventLog, scoreHistory in-memory. Low priority until
+long-session use cases emerge.
+
+### PUSHED BACK — not bugs
+
+**Q1 — Bayesian Prior Order (CURRENT ORDER IS CORRECT)**
+ChatGPT suggested: apply prior first, then repetition penalty.
+Verified: this would produce 0.458 vs current 0.695 at turn 1 with
+a repetitive early response — MORE punishing, not less. The prior's
+purpose is to protect early sessions from noisy scores. Applying
+penalty after the prior blend would defeat that purpose entirely.
+Current order (penalty → prior blend) is mathematically correct for
+the stated intent. No change needed.
+
+**Q2 — GARCH Entropy Timing (NOT A BUG)**
+Verified in sendMessage: hallucinationAssessment computed at SM line 198,
+updateSmoothedVariance called at SM line 303. Entropy is from the
+current turn's content, passed directly. Not stale. ChatGPT's concern
+was valid to raise, implementation is correct.
+
+### SYSTEM-LEVEL FINDINGS — all valid, all acknowledged
+
+- No unified state model across Kalman + GARCH + SDE + TF-IDF
+- No calibration pipeline (P(failure | signal) unmeasured)
+- No ground truth loop (no labeled failures, no ROC curves)
+- AUC > 0.8 required before Level 1 credibility claim
+- GARCH on semantic drift: speculative, may work empirically, unproven
+
+These are in CONTRIBUTING.md validation experiments section.
+No pushback. All correct.
+
+---
+
 ## StableDRL Integration (logged April 16, 2026)
 
 **Source:** Li, X. (@sheriyuo). *Why do dLLMs tend to collapse in RL.* X/Twitter, April 15, 2026. Covers the StableDRL paper on stabilizing RL for diffusion language models.

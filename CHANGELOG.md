@@ -13,6 +13,24 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.7.0] — 2026-04-16
+
+### Mathematical Improvements
+- **Exponential coherence blending** — replaced linear `turnWeight = min(t/10, 1.0)` ramp with `α(t) = 1 − exp(−t/τ)`, τ=5. Smooth continuous transition instead of hard cutoff at turn 10. Strictly dominates both the old design and the originally proposed alternative. Balances early-session stability (G1) with anomaly sensitivity (G2). Credit: ChatGPT Cathedral Q1 resolution.
+- **Heston Full Truncation Euler** — replaced simple `Math.max(variance, 0)` clamp with Full Truncation scheme: clamp inside drift and diffusion terms before computing the step. Removes systematic downward bias in variance estimates that was tightening drift detection thresholds artificially. (Q4 fix)
+
+### Bug Fixes
+- **CIR Feller Condition enforced at UI** — live warning displays in CIR slider config when 2κθ < σ², explaining the violation and how to fix it. Process was previously allowed to run in invalid non-ergodic state. (Q3 fix)
+- **CIR/OU scale normalization** — all non-OU SDE paths (CIR, Heston, Vasicek, SABR) now normalized to zero-mean unit-variance before feeding into `sdePercentilesAtStep`. Shared drift formula `lo_band = kalman.x + pcts.p10 * 0.15` now means the same thing regardless of which model is active. Previously caused false drift events under CIR. (Q5 fix)
+- **RLHF bridge decoupled from adaptive sigma** — `rlhfBridgeEnabled` is now an independent state with its own toggle (FEATURES → PHYSICS & CONTROL MODULES). Previously gated on `adaptiveSigmaOn` — a hidden dead zone where human -1 ratings had no effect. Now operates independently. (Q6 fix)
+- **Demo baseline contamination fixed** — `sendDemoBaseline` now scores against user messages only: `computeCoherence(reply, messages.filter(m => m.role === "user"))`. Previously scored against full VECTOR-corrected history — data leakage making the comparison invalid. (Q7 fix)
+- **In-memory ring buffer** — `setCoherenceData` now slices to 200 entries immediately in memory, not just at storage save time. Prevents unbounded array growth and cumulative useMemo render lag on long sessions. (Q8 fix)
+
+### New Toggle
+- **RLHF→SDE Bridge** — independently toggleable in FEATURES → PHYSICS & CONTROL MODULES. Default ON.
+
+---
+
 ## [1.6.0] — 2026-04-16
 
 ### StableDRL Mode

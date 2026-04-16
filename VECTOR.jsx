@@ -249,9 +249,14 @@ function simulateHeston(params,T=20,dt=0.02,nPaths=50,seed=42) {
     for (let i=1;i<=nSteps;i++) {
       const z1=randn(rng),z2=randn(rng);
       const w1=z1, w2=rho*z1+Math.sqrt(1-rho*rho)*z2;
-      const sqV=Math.sqrt(Math.max(v,0));
+      // Full Truncation Euler — clamp inside drift and diffusion terms, not after.
+      // Removes downward bias from simple absorption clamp (Q4 fix, ChatGPT audit).
+      const vPos=Math.max(v,0);
+      const sqV=Math.sqrt(vPos);
       path[i]=path[i-1]+sqV*Math.sqrt(dt)*w1;
-      v=Math.max(v+kappa*(theta-v)*dt+sigma*sqV*Math.sqrt(dt)*w2,0);
+      const vDrift=kappa*(theta-vPos)*dt;
+      const vDiff=sigma*sqV*Math.sqrt(dt)*w2;
+      v=vPos+vDrift+vDiff;  // allow negative then clamp at next step (Full Truncation)
     }
     paths.push(path);
   }
@@ -536,10 +541,15 @@ function computeCoherence(newContent,history,weights,repThresh) {
   const rawScore=(w.tfidf*vocab+w.jsd*jsdScore+w.length*lenScore+w.structure*struct+w.persistence*persist)*repetitionPenalty;
   // Bayesian prior: pull early-session scores toward 0.75 baseline — sparse data is noisy.
   // Full weight at turn 10+. Before that, blends toward preset baseline.
-  const turnWeight=Math.min(ah.length/10,1.0);
-  const priorScore=0.75;
-  const blended=turnWeight*rawScore+(1-turnWeight)*priorScore;
-  return Math.min(Math.max(blended,.30),.99);
+  // V1.7.0: Exponential blending — strictly dominates linear ramp.
+  // α(t) = 1 − exp(−t/τ) gives smooth continuous transition vs hard cutoff at turn 10.
+  // τ=5 ≈ same behaviour as old ramp but no cliff. Balances G1 (early stability) + G2 (anomaly sensitivity).
+  // Reference: ChatGPT Cathedral Q1 resolution, April 16 2026.
+  const TAU_BLEND = 5.0;
+  const alpha_t = 1 - Math.exp(-ah.length / TAU_BLEND);
+  const priorScore = 0.75;
+  const blended = alpha_t * rawScore + (1 - alpha_t) * priorScore;
+  return Math.min(Math.max(blended, .30), .99);
 }
 
 // ── Semantic Coherence — ──────────────────────────────────
@@ -2533,6 +2543,7 @@ const TuneModal = React.memo(function TuneModal() {
     domainAnchor,setDomainAnchor,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
     stabledrlEnabled,setStabledrlEnabled,
+    rlhfBridgeEnabled,setRlhfBridgeEnabled,
     useEKF,setUseEKF,useParticle,setUseParticle,
     berryPhase,sheTorque,
   } = useContext(TuneCtx);
@@ -2665,6 +2676,7 @@ const TuneModal = React.memo(function TuneModal() {
                 ["Ext. Kalman (EKF)",   useEKF,       ()=>setUseEKF(p=>!p),       "#0A7878","Nonlinear Jacobian Kalman. More accurate for OU dynamics."],
                 ["Particle Filter",     useParticle,  ()=>setUseParticle(p=>!p),  "#9A5C08","200-particle SMC. Handles non-Gaussian drift. Blends with Kalman."],
                 ["StableDRL Mode",      stabledrlEnabled, ()=>setStabledrlEnabled(p=>!p), "#C81030","Unconditional JSD clipping + self-normalizing injection. Prevents over-correction loops. (Li et al. 2026)"],
+                ["RLHF→SDE Bridge",    rlhfBridgeEnabled,()=>setRlhfBridgeEnabled(p=>!p),"#178040","RLHF -1 ratings nudge σ upward on drifted turns. Independent of sigma adaptation."],
               ].map(([label,val,toggle,col,note])=>(
                 <div key={label} style={{display:"flex",alignItems:"center",gap:8,
                   padding:"6px 10px",borderRadius:4,
@@ -3227,6 +3239,15 @@ const TuneModal = React.memo(function TuneModal() {
               {sdeModel==="cir"&&(
                 <div style={{background:"#F0F4FA",border:"1px solid #B0C4DA",borderRadius:4,padding:10}}>
                   <div style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#4A7090",marginBottom:8}}>dX = κ(θ−X)dt + σ√X dW</div>
+                  {/* Q3 fix: Feller condition guard — enforced at input (ChatGPT audit) */}
+                  {(2*cirKappa*cirTheta < cirSigma*cirSigma)&&(
+                    <div style={{background:"#FEE8E8",border:"1px solid #C81030",borderRadius:3,
+                      padding:"5px 8px",marginBottom:8,fontFamily:"Courier New,monospace",
+                      fontSize:7,color:"#C81030",lineHeight:1.5}}>
+                      ⚠ FELLER VIOLATION: 2κθ = {(2*cirKappa*cirTheta).toFixed(4)} {"<"} σ² = {(cirSigma*cirSigma).toFixed(4)}
+                      <br/>Process may hit zero. Increase κ or θ, or reduce σ.
+                    </div>
+                  )}
                   {[["κ (mean-reversion)",cirKappa,setCirKappa,0.01,2.0,0.01],
                     ["θ (long-run mean)", cirTheta,setCirTheta,0.01,0.50,0.01],
                     ["σ (volatility)",    cirSigma,setCirSigma,0.01,0.50,0.01],
@@ -4409,7 +4430,8 @@ export default function VECTOR() {
   const [sdeSigmaOn,      setSdeSigmaOn]      = useState(true);
   const [mtjEnabled,      setMtjEnabled]      = useState(true);
   const [levyEnabled,     setLevyEnabled]     = useState(false);
-  const [stabledrlEnabled,setStabledrlEnabled]= useState(true);  // StableDRL: unconditional clipping + self-norm. Default ON.
+  const [stabledrlEnabled,setStabledrlEnabled]= useState(true);
+  const [rlhfBridgeEnabled,setRlhfBridgeEnabled]= useState(true); // RLHF→SDE: independent of sigma adaptation  // StableDRL: unconditional clipping + self-norm. Default ON.
   const [levyAlpha,       setLevyAlpha]       = useState(LEVY_ALPHA_DEFAULT);
   const [useEKF,          setUseEKF]          = useState(false);  // Extended Kalman Filter
   const [useParticle,     setUseParticle]     = useState(false);  // Particle Filter
@@ -4669,6 +4691,7 @@ export default function VECTOR() {
         if (p.useEKF!=null)            setUseEKF(p.useEKF);
         if (p.useParticle!=null)       setUseParticle(p.useParticle);
         if (p.stabledrlEnabled!=null)  setStabledrlEnabled(p.stabledrlEnabled);
+        if (p.rlhfBridgeEnabled!=null)  setRlhfBridgeEnabled(p.rlhfBridgeEnabled);
         if (p.autoTuneEnabled!=null)   setAutoTuneEnabled(p.autoTuneEnabled);
         if (p.caPassRate!=null)        setCaPassRate(p.caPassRate);
         if (p.domainAnchor!=null)      setDomainAnchor(p.domainAnchor);
@@ -4762,7 +4785,7 @@ export default function VECTOR() {
           mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
           sdeAlphaVal,sdeBetaVal,sdeSigmaVal,
           sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
-          mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,
+          mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,rlhfBridgeEnabled,
           postAuditThresh,showSdePaths,pathOpacity,
           advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
           showMhtStudy,showPoole,caPassRate,
@@ -4826,10 +4849,24 @@ export default function VECTOR() {
     mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
   }),[sdeAlphaOn,sdeAlphaVal,sdeBetaOn,sdeBetaVal,sdeSigmaOn,sdeSigmaVal,mtjEnabled,mtjDelta,levyEnabled,levyAlpha]);
   const livePaths = useMemo(()=>{
-    if (sdeModel==="cir")     return simulateCIR({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
-    if (sdeModel==="heston")  return simulateHeston({kappa:hestonKappa,theta:hestonTheta,sigma:hestonSigma,rho:hestonRho,v0:hestonV0},20,.02,nPaths,42);
-    if (sdeModel==="vasicek") return simulateVasicek({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42);
-    if (sdeModel==="sabr")    return simulateSABR({},20,.02,nPaths,42);
+    // Q5 fix: normalize non-OU paths to zero-mean unit-variance before drift detection.
+    // CIR/Heston/Vasicek/SABR start at different scales than OU (~0), so shared
+    // lo_band threshold would mean different things per model without normalization.
+    const normalizePaths = (paths) => {
+      if (!paths || !paths.length) return paths;
+      const allVals = paths.flatMap(p => Array.from(p));
+      const mean = allVals.reduce((s,v)=>s+v,0)/allVals.length;
+      const std = Math.sqrt(allVals.reduce((s,v)=>s+Math.pow(v-mean,2),0)/allVals.length) || 1;
+      return paths.map(p => {
+        const n = new Float32Array(p.length);
+        for(let i=0;i<p.length;i++) n[i]=(p[i]-mean)/std;
+        return n;
+      });
+    };
+    if (sdeModel==="cir")     return normalizePaths(simulateCIR({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42));
+    if (sdeModel==="heston")  return normalizePaths(simulateHeston({kappa:hestonKappa,theta:hestonTheta,sigma:hestonSigma,rho:hestonRho,v0:hestonV0},20,.02,nPaths,42));
+    if (sdeModel==="vasicek") return normalizePaths(simulateVasicek({kappa:cirKappa,theta:cirTheta,sigma:cirSigma},20,.02,nPaths,42));
+    if (sdeModel==="sabr")    return normalizePaths(simulateSABR({},20,.02,nPaths,42));
     return simulateSDE(liveSDEOverride,20,.02,nPaths,42);
   },[sdeModel,nPaths,liveSDEOverride,cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0]);
   // R3 fix: memoized — null customMutePhrases returned new MUTE_PHRASES ref every render,
@@ -5415,7 +5452,7 @@ export default function VECTOR() {
         entropy:hallucinationAssessment.entropy??null,
         vocabGrowth:hallucinationAssessment.vocabGrowth??null,
       }];
-      setCoherenceData(newCData);
+      setCoherenceData(newCData.slice(-200)); // Q8: ring buffer cap in-memory
 
       // ── V1.5.42: Integrity Floor detection ────────────────────
       // Separate category from drift: score below integrityThreshold = coherence bond broken.
@@ -5586,7 +5623,7 @@ export default function VECTOR() {
      autoTuneEnabled,feedbackState,provider,
      kalmanHistory,featIntegrityFloor,integrityThreshold,
      useEKF,useParticle,particleState,
-     stabledrlEnabled,
+     stabledrlEnabled,rlhfBridgeEnabled,
      evolutionHistory,vectorFrontier,lastAutoTune]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
@@ -5766,6 +5803,7 @@ export default function VECTOR() {
     useEKF,setUseEKF,useParticle,setUseParticle,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
     stabledrlEnabled,setStabledrlEnabled,
+    rlhfBridgeEnabled,setRlhfBridgeEnabled,
     mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,
     showIntegrityFloor,setShowIntegrityFloor,featIntegrityFloor,setFeatIntegrityFloor,
     integrityThreshold,setIntegrityThreshold,integrityBreachCount,
@@ -5776,7 +5814,7 @@ export default function VECTOR() {
       featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,postAuditThresh,
       adaptiveSigmaOn,adaptedSigma,adaptationRate,
       sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
-      mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,
+      mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,rlhfBridgeEnabled,
       customMutePhrases,mutePhraseInput,
       mathEpsilon,mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
       mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
@@ -5890,7 +5928,8 @@ export default function VECTOR() {
           messages:[{role:"user",content:promptText}]})});
       const data=await resp.json();
       const reply=((data.content||[]).map(c=>c.text||"")).join("").trim();
-      const baseScore=computeCoherence(reply,messages);
+      // Q7 fix: score against user messages only — no corrected history leakage (ChatGPT audit)
+      const baseScore=computeCoherence(reply,messages.filter(m=>m.role==="user"));
       setDemoBaseline({prompt:promptText,response:reply,score:baseScore});
     } catch(e) {
       setDemoBaseline({prompt:promptText,response:"Error: "+e.message,score:null});
@@ -6814,7 +6853,8 @@ export default function VECTOR() {
                           // RLHF→SDE bridge: -1 rating on a drifted turn with active harness
                           // nudges SDE alpha (mean reversion) stronger for this session.
                           // κ=0.444 is never touched — only sigma adaptation path used.
-                          if(v===-1&&cdata&&cdata.harnessActive&&cdata.raw<0.65&&adaptiveSigmaOn){
+                          // RLHF bridge decoupled from adaptiveSigmaOn (Q6 fix, ChatGPT audit)
+                          if(v===-1&&cdata&&cdata.harnessActive&&cdata.raw<0.65&&rlhfBridgeEnabled){
                             const rlhfTarget=Math.min(adaptedSigma*1.08,0.40);
                             setAdaptedSigma(rlhfTarget);
                             setEventLog(p=>[...p,{timestamp:new Date().toISOString(),turn:ti+1,
