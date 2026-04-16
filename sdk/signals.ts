@@ -210,3 +210,130 @@ export function assessHallucinationSignals(
 
   return { flagged: signals.length > 0, signals, sourceScore, confidenceHits, contradiction };
 }
+
+// ── Mutual Information ────────────────────────────────────────
+/**
+ * Statistical dependence between current response and context.
+ * Low MI (< 0.3) = response statistically independent of conversation.
+ * Stronger than JSD for detecting contextual drift.
+ */
+export function computeMutualInformation(
+  newTokens: string[],
+  contextTokens: string[]
+): number | null {
+  if (!newTokens.length || !contextTokens.length) return null;
+  const allTerms = new Set([...newTokens, ...contextTokens]);
+  const nA = newTokens.length, nB = contextTokens.length;
+  const freqA: Record<string, number> = {};
+  const freqB: Record<string, number> = {};
+  newTokens.forEach(w => { freqA[w] = (freqA[w] || 0) + 1; });
+  contextTokens.forEach(w => { freqB[w] = (freqB[w] || 0) + 1; });
+  const freqJoint: Record<string, number> = {};
+  allTerms.forEach(w => {
+    const pA = (freqA[w] || 0) / nA, pB = (freqB[w] || 0) / nB;
+    if (pA > 0 && pB > 0) freqJoint[w] = Math.sqrt(pA * pB);
+  });
+  const hA = -Object.values(freqA).reduce((s, c) => { const p = c / nA; return s + p * Math.log2(p); }, 0);
+  const hB = -Object.values(freqB).reduce((s, c) => { const p = c / nB; return s + p * Math.log2(p); }, 0);
+  const jTotal = Object.values(freqJoint).reduce((s, v) => s + v, 0) || 1;
+  const hJoint = -Object.values(freqJoint).reduce((s, v) => { const p = v / jTotal; return p > 0 ? s + p * Math.log2(p) : s; }, 0);
+  const mi = Math.max(0, hA + hB - hJoint);
+  const maxMI = Math.max(0.001, Math.min(hA, hB));
+  return Math.min(1, mi / maxMI);
+}
+
+// ── Fisher Information ────────────────────────────────────────
+/**
+ * Rate of change in score distribution per turn.
+ * Spike = sudden shift in response character.
+ * Reference: Fisher (1925).
+ */
+export function computeFisherInformation(scoreHistory: number[]): number | null {
+  if (scoreHistory.length < 3) return null;
+  const mean = scoreHistory.reduce((s, v) => s + v, 0) / scoreHistory.length;
+  const variance = scoreHistory.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / scoreHistory.length;
+  if (variance < 1e-8) return 0;
+  const recent = scoreHistory.slice(-4);
+  let velocitySum = 0;
+  for (let i = 1; i < recent.length; i++)
+    velocitySum += Math.pow(recent[i] - recent[i - 1], 2);
+  return (velocitySum / (recent.length - 1)) / variance;
+}
+
+// ── Kolmogorov Complexity Proxy ───────────────────────────────
+/**
+ * LZ run-length encoding ratio as information density measure.
+ * High = complex/information-dense. Low = repetitive/compressible.
+ * Reference: Li & Vitányi (1997).
+ */
+export function computeKolmogorovProxy(text: string): number | null {
+  if (!text || text.length < 10) return null;
+  const s = text.toLowerCase().replace(/[^a-z0-9]/g, ' ').trim();
+  if (!s.length) return null;
+  let rle = 1;
+  for (let i = 1; i < s.length; i++) if (s[i] !== s[i - 1]) rle++;
+  return Math.min(1, rle / s.length);
+}
+
+// ── Berry Phase Proxy ─────────────────────────────────────────
+/**
+ * Geometric phase from session trajectory.
+ * High = stable oscillating session (closed loops).
+ * Low = drifted and never returned.
+ * Reference: Berry (1984).
+ */
+export function computeBerryPhase(scoreHistory: number[]): number | null {
+  if (scoreHistory.length < 6) return null;
+  const mean = scoreHistory.reduce((s, v) => s + v, 0) / scoreHistory.length;
+  let crossings = 0;
+  for (let i = 1; i < scoreHistory.length; i++) {
+    const prev = scoreHistory[i - 1] - mean;
+    const curr = scoreHistory[i] - mean;
+    if (prev * curr < 0) crossings++;
+  }
+  return parseFloat(((crossings / (scoreHistory.length - 1)) * Math.PI).toFixed(4));
+}
+
+// ── Spin Hall Effect Torque (Scalar Proxy) ────────────────────
+/**
+ * Simplified SOT switching from spintronics applied to coherence.
+ * Variance = spin current. Kalman x̂ = magnetization state.
+ * Positive torque = stabilizing. Negative = destabilizing.
+ * θ_SH = 0.20 (spin Hall angle, heavy metal analog).
+ * Reference: Sinova et al. (2015) Reviews of Modern Physics.
+ */
+const SHE_THETA = 0.20;
+export function computeSHETorque(
+  smoothedVar: number | null,
+  kalmanX: number
+): number | null {
+  if (smoothedVar == null) return null;
+  const magnetizationSign = kalmanX >= 0.5 ? 1 : -1;
+  return parseFloat((SHE_THETA * smoothedVar * magnetizationSign).toFixed(6));
+}
+
+// ── EWMA Trend ────────────────────────────────────────────────
+/**
+ * Exponentially weighted moving average coherence trend.
+ * Returns ewma, trend direction, and momentum.
+ */
+export interface EWMAResult {
+  ewma: number;
+  trend: number;
+  momentum: number;
+}
+export function computeEWMATrend(
+  history: number[],
+  alpha = 0.3
+): EWMAResult {
+  if (history.length < 2) return { ewma: history[0] ?? 0, trend: 0, momentum: 0 };
+  let ewma = history[0];
+  for (let i = 1; i < history.length; i++)
+    ewma = alpha * history[i] + (1 - alpha) * ewma;
+  const prev = history.length >= 2 ? history[history.length - 2] : ewma;
+  const trend = ewma - prev;
+  const momentum = history.length >= 3
+    ? trend - (history[history.length - 2] - history[history.length - 3])
+    : 0;
+  return { ewma, trend, momentum };
+}
