@@ -179,6 +179,32 @@ export interface CoherenceDataPoint {
   smoothedVar:       number;
   behavioralFlag:    boolean;
   hallucinationFlag: boolean;
+  // Extended metrics (V1.7.0)
+  mode?:             string;
+  postAuditScore?:   number | null;
+  quietFail?:        boolean;
+  ewma?:             number;
+  trend?:            number;
+  momentum?:         number;
+  anchorDist?:       number | null;
+  truncated?:        boolean;
+  hedgeCount?:       number;
+  innovAC?:          number | null;
+  effRatio?:         number | null;
+  mutualInfo?:       number | null;
+  lyapunov?:         number;
+  lyapunovStable?:   boolean;
+  realizedVol?:      number | null;
+  kolmogorov?:       number | null;
+  fisherInfo?:       number | null;
+  pidP?:             number;
+  pidI?:             number;
+  pidD?:             number;
+  pidOutput?:        number;
+  berryPhase?:       number | null;
+  sheTorque?:        number | null;
+  entropy?:          number | null;
+  vocabGrowth?:      number | null;
 }
 
 /**
