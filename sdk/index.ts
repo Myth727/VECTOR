@@ -1,9 +1,12 @@
 /**
- * VECTOR SDK
+ * VECTOR SDK — Volatility-Sensitive Correction Engine
+ * © 2026 Hudson & Perry Research · MIT License
  *
- * © 2026 Hudson & Perry Research
- * © 2026 Hudson & Perry Research
- * License: MIT
+ * VERSION NOTE: This SDK is updated alongside VECTOR.jsx releases but may
+ * occasionally lag by one version between releases. The definitive source
+ * of truth for the complete implementation is always VECTOR.jsx.
+ * For the full UI + engine, use VECTOR.jsx or deploy via Vercel.
+ * For headless offline scoring, see tools/vector_harness.py.
  *
  * Quick start:
  *   import { computeCoherence, kalmanStep, buildPipeInjection, PRESETS } from './index';
@@ -31,11 +34,19 @@ export type { PresetConfig } from './constants';
 // ── SDE simulation and Kalman filter ────────────────────────────
 export {
   simulateSDE,
+  simulateCIR,
+  simulateHeston,
+  simulateVasicek,
+  simulateSABR,
   sdePercentilesAtStep,
+  normalizePaths,
   kalmanStep,
   kalmanDualStep,
+  ekfStep,
+  levyNoise,
+  computeLyapunovBound,
 } from './sde';
-export type { SDEParams, KalmanState } from './sde';
+export type { SDEParams, KalmanState, LyapunovResult } from './sde';
 
 // ── Coherence scoring ───────────────────────────────────────────
 export {
@@ -52,10 +63,15 @@ export type { CoherenceWeights, Message, ContentBlock } from './coherence';
 // ── GARCH variance and Drift Law ─────────────────────────────────
 export {
   updateSmoothedVariance,  // cfg → per-preset GARCH params (V1.5.3)
-  driftLawCapEff,          // epsilon param (V1.5.3)
-  driftLawFloor,           // epsilon param (V1.5.3)
+  driftLawCapEff,
+  driftLawFloor,
   applyZeroDriftLock,
+  computePIDCorrection,    // P-I-D on variance — output > 2.0 = over-correction risk
+  computeRealizedVolatility, // rolling squared returns
+  stabledrlClipScore,      // unconditional score clipping (Li et al. 2026)
+  stabledrlNormalizeVar,   // self-normalizing variance scaling
 } from './drift';
+export type { PIDResult } from './drift';
 
 // ── Signal detection ─────────────────────────────────────────────
 export {
@@ -64,11 +80,18 @@ export {
   detectConfidenceLanguage,
   checkSourceConsistency,
   checkSelfContradiction,
+  computeMutualInformation,    // MI between turns — low = drift risk
+  computeFisherInformation,    // rate of distribution change per turn
+  computeKolmogorovProxy,      // LZ complexity ratio
+  computeBerryPhase,           // geometric phase of session trajectory
+  computeSHETorque,            // spin Hall effect torque proxy
+  computeEWMATrend,            // exponentially weighted moving average
 } from './signals';
 export type {
   BehavioralSignal,
   BehavioralAssessment,
   HallucinationAssessment,
+  EWMAResult,
 } from './signals';
 
 // ── Engine: pipe injection, RAG, health, pruning ─────────────────
