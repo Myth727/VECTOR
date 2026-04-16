@@ -151,6 +151,17 @@ Default weights: TF-IDF=0.25 · JSD=0.25 · Length=0.25 · Structure=0.15 · Per
 | **struct** | Structural consistency — sentence count relative to session average |
 | **persist** | Term persistence — top-15 prior terms reappearing in new response |
 | **repPenalty** | Repetition guard — penalizes excessive overlap with the immediately prior response |
+| **α(t)** | Exponential blending weight — α(t) = 1 − exp(−t/τ), τ=5. Smoothly transitions from prior-dominated to signal-dominated scoring. Replaces hard linear ramp. |
+| **prior** | Bayesian prior = 0.75. Anchors early-session scores. Full signal weight reached asymptotically. |
+
+**Final score formula (V1.7.0):**
+
+```
+blended = α(t) × rawScore + (1 − α(t)) × 0.75
+output  = clamp(blended, 0.30, 0.99)
+```
+
+Where α(t) = 1 − exp(−t/τ), τ = 5, t = number of assistant turns.
 
 **Smoothed IDF:** IDF = log((N+1)/(df+1)) + 1. Shared terms get IDF ≈ 1.0, unique terms get IDF ≈ 1.4. This ensures shared terms contribute (not zeroed out) while unique terms are still weighted higher.
 
@@ -264,6 +275,10 @@ cap_eff = ε / (1 + γ_h)
 **Confirmed:**
 
 SDE math · Kalman filter · GARCH(1,1) · TF-IDF+JSD scoring · Pipe injection · Behavioral signal detection · Per-preset GARCH tuning · Epsilon parameterization · Post-audit dual Kalman · Langevin/Neel-Brown math · EDM 45° angular gate parallel (Science Advances April 2026)
+
+**V1.7.0 numerical scheme notes:**
+- **Heston variance (Full Truncation Euler):** positive part v⁺ = max(v, 0) used inside drift and diffusion terms before computing the update step, not clamped after. Eliminates systematic downward bias from simple absorption at zero.
+- **CIR Feller enforcement:** UI warns when 2κθ < σ² (Feller condition violated). Prevents invalid non-ergodic parameter configurations from running.
 
 **Requires validation:**
 
