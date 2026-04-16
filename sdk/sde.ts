@@ -180,3 +180,215 @@ export function driftLawFloor(
   const sys = capEff * (1 - Math.exp(-Math.pow(Math.max(n, 0.001), alphaS) / tau));
   return sys + Math.abs(betaC * Math.sin(gamma_h * n * 0.01)) * 0.05;
 }
+
+// ── CIR (Cox-Ingersoll-Ross) ───────────────────────────────────
+/**
+ * dX = κ(θ−X)dt + σ√X dW  — keeps variance non-negative.
+ * Feller condition: 2κθ ≥ σ² guarantees X never reaches zero.
+ * @throws Warning in return if Feller condition violated.
+ */
+export function simulateCIR(
+  params: { kappa?: number; theta?: number; sigma?: number } = {},
+  T = 20, dt = 0.02, nPaths = 50, seed = 42
+): { paths: Float32Array[]; fellerViolation: boolean } {
+  const { kappa = 0.444, theta = 0.10, sigma = 0.08 } = params;
+  const fellerViolation = 2 * kappa * theta < sigma * sigma;
+  const nSteps = Math.ceil(T / dt);
+  const rng = makeRng(seed);
+  const paths: Float32Array[] = [];
+  for (let p = 0; p < nPaths; p++) {
+    const path = new Float32Array(nSteps + 1);
+    path[0] = theta;
+    for (let i = 1; i <= nSteps; i++) {
+      const x = Math.max(path[i - 1], 0);
+      path[i] = Math.max(x + kappa * (theta - x) * dt + sigma * Math.sqrt(x) * Math.sqrt(dt) * randn(rng), 0);
+    }
+    paths.push(path);
+  }
+  return { paths, fellerViolation };
+}
+
+// ── Heston Stochastic Volatility ──────────────────────────────
+/**
+ * dS/S = √V dW₁  |  dV = κ(θ−V)dt + σ√V dW₂  |  corr(dW₁,dW₂) = ρ
+ * Uses Full Truncation Euler scheme — eliminates downward bias from
+ * simple absorption clamp. Reference: Lord et al. (2010).
+ */
+export function simulateHeston(
+  params: { kappa?: number; theta?: number; sigma?: number; rho?: number; v0?: number } = {},
+  T = 20, dt = 0.02, nPaths = 50, seed = 42
+): Float32Array[] {
+  const { kappa = 2.0, theta = 0.04, sigma = 0.30, rho = -0.70, v0 = 0.04 } = params;
+  const nSteps = Math.ceil(T / dt);
+  const rng = makeRng(seed);
+  const paths: Float32Array[] = [];
+  for (let p = 0; p < nPaths; p++) {
+    const path = new Float32Array(nSteps + 1);
+    path[0] = 0;
+    let v = v0;
+    for (let i = 1; i <= nSteps; i++) {
+      const z1 = randn(rng), z2 = randn(rng);
+      const w1 = z1, w2 = rho * z1 + Math.sqrt(1 - rho * rho) * z2;
+      // Full Truncation: use v+ inside drift and diffusion
+      const vPos = Math.max(v, 0);
+      const sqV = Math.sqrt(vPos);
+      path[i] = path[i - 1] + sqV * Math.sqrt(dt) * w1;
+      v = vPos + kappa * (theta - vPos) * dt + sigma * sqV * Math.sqrt(dt) * w2;
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── Vasicek ────────────────────────────────────────────────────
+/**
+ * dX = κ(θ−X)dt + σ dW  — allows negative values.
+ * Models sessions that go genuinely incoherent below zero.
+ */
+export function simulateVasicek(
+  params: { kappa?: number; theta?: number; sigma?: number } = {},
+  T = 20, dt = 0.02, nPaths = 50, seed = 42
+): Float32Array[] {
+  const { kappa = 0.444, theta = 0.10, sigma = 0.08 } = params;
+  const nSteps = Math.ceil(T / dt);
+  const rng = makeRng(seed);
+  const paths: Float32Array[] = [];
+  for (let p = 0; p < nPaths; p++) {
+    const path = new Float32Array(nSteps + 1);
+    path[0] = theta;
+    for (let i = 1; i <= nSteps; i++) {
+      path[i] = path[i - 1] + kappa * (theta - path[i - 1]) * dt + sigma * Math.sqrt(dt) * randn(rng);
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── SABR ───────────────────────────────────────────────────────
+/**
+ * Stochastic Alpha Beta Rho model.
+ * dF = σ·F^β dW₁  |  dσ = α·σ dW₂  |  corr(dW₁,dW₂) = ρ
+ * Richer volatility surfaces than GARCH + OU.
+ * Reference: Hagan et al. (2002).
+ */
+export function simulateSABR(
+  params: { alpha?: number; beta?: number; rho?: number; nu?: number; f0?: number } = {},
+  T = 20, dt = 0.02, nPaths = 50, seed = 42
+): Float32Array[] {
+  const { alpha = 0.30, beta = 1.0, rho = -0.50, nu = 0.40, f0 = 0.08 } = params;
+  const nSteps = Math.ceil(T / dt);
+  const rng = makeRng(seed);
+  const paths: Float32Array[] = [];
+  for (let p = 0; p < nPaths; p++) {
+    const path = new Float32Array(nSteps + 1);
+    path[0] = 0;
+    let f = f0, vol = alpha;
+    for (let i = 1; i <= nSteps; i++) {
+      const z1 = randn(rng), z2 = randn(rng);
+      const w1 = z1, w2 = rho * z1 + Math.sqrt(Math.max(1 - rho * rho, 0)) * z2;
+      const df = vol * Math.pow(Math.abs(f) + 1e-8, beta) * Math.sqrt(dt) * w1;
+      const dvol = nu * vol * Math.sqrt(dt) * w2;
+      f = f + df;
+      vol = Math.max(vol + dvol, 1e-8);
+      path[i] = path[i - 1] + df;
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// ── Extended Kalman Filter (EKF) ───────────────────────────────
+/**
+ * Linearizes nonlinear OU dynamics via analytical Jacobian.
+ * More accurate than linear Kalman for OU + periodic forcing.
+ * F = ∂f/∂x = 1 + a(t)·dt  (vs F = 1 + a(t) in linear Kalman)
+ * Reference: Jazwinski (1970).
+ */
+export function ekfStep(
+  state: KalmanState,
+  obs: number,
+  t: number,
+  params: Partial<SDEParams> = {},
+  kalR = KALMAN_R,
+  kalSigP = KALMAN_SIGMA_P,
+  smoothedVar = 0
+): KalmanState {
+  const p: SDEParams = { ...SDE_PARAMS, ...params };
+  const { alpha, beta_p, omega, kappa, delta = 0 } = p;
+  const lam = 1 / (1 + kappa);
+  const a_t = lam * (alpha + beta_p * Math.sin(omega * t) - delta * smoothedVar);
+  const Q = Math.pow(kalSigP * lam, 2);
+  const F = 1 + a_t * 0.1; // Jacobian with dt=0.1
+  const x_p = state.x + a_t * state.x * 0.1;
+  const P_p = F * F * state.P + Q;
+  const K = P_p / (P_p + kalR);
+  return {
+    x: x_p + K * (obs - x_p),
+    P: Math.max((1 - K) * P_p, 1e-8),
+  };
+}
+
+// ── Lévy Flight Noise ──────────────────────────────────────────
+/**
+ * α-stable noise via Chambers-Mallows-Stuck method.
+ * α=2: Gaussian. α=1.7 (default): moderate heavy tail.
+ * α=1: Cauchy (very heavy). Models rare large behavioral jumps.
+ * Reference: Chambers, Mallows & Stuck (1976).
+ */
+export function levyNoise(rng: () => number, alpha = 1.7): number {
+  if (Math.abs(alpha - 2.0) < 0.01) {
+    const u1 = Math.max(rng(), 1e-10), u2 = rng();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  }
+  const u = (rng() - 0.5) * Math.PI;
+  const w = -Math.log(Math.max(rng(), 1e-10));
+  const num = Math.sin(alpha * u);
+  const den = Math.pow(Math.cos(u), 1 / alpha);
+  const factor = Math.pow(Math.cos((1 - alpha) * u) / w, (1 - alpha) / alpha);
+  const z = (num / den) * factor;
+  return isFinite(z) ? Math.max(-5, Math.min(5, z)) : 0;
+}
+
+// ── Path Normalization ─────────────────────────────────────────
+/**
+ * Normalize SDE paths to zero-mean unit-variance.
+ * Required before drift detection when mixing CIR/Heston/Vasicek/SABR
+ * with OU — different models have different baseline scales.
+ * Q5 fix: prevents false drift events from scale mismatch.
+ */
+export function normalizePaths(paths: Float32Array[]): Float32Array[] {
+  if (!paths || !paths.length) return paths;
+  const allVals = paths.flatMap(p => Array.from(p));
+  const mean = allVals.reduce((s, v) => s + v, 0) / allVals.length;
+  const std = Math.sqrt(allVals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / allVals.length) || 1;
+  return paths.map(p => {
+    const n = new Float32Array(p.length);
+    for (let i = 0; i < p.length; i++) n[i] = (p[i] - mean) / std;
+    return n;
+  });
+}
+
+// ── Lyapunov Stability Bound ───────────────────────────────────
+/**
+ * For OU SDE: stable iff a_max = (α + β_p − δ·σ²)/(1+κ) < 0
+ * Margin > 0 means parameters are in stable regime.
+ * Reference: Lyapunov (1892); Gardiner (1985).
+ */
+export interface LyapunovResult {
+  stable: boolean;
+  a_max: number;
+  a_min: number;
+  margin: number;
+}
+export function computeLyapunovBound(
+  params: Partial<SDEParams>,
+  smoothedVar = 0
+): LyapunovResult {
+  const { alpha = -0.25, beta_p = 0.18, kappa = 0.444, delta = 0.30 } = params;
+  const lam = 1 / (1 + kappa);
+  const varTerm = delta * smoothedVar;
+  const a_max = lam * (alpha + beta_p - varTerm);
+  const a_min = lam * (alpha - beta_p - varTerm);
+  const margin = -a_max;
+  return { stable: margin > 0, a_max, a_min, margin: parseFloat(margin.toFixed(6)) };
+}
