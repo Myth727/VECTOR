@@ -13,6 +13,27 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.6.0] — 2026-04-16
+
+### StableDRL Mode
+*Adapted from Li, X. et al. (2026). StableDRL: Stabilizing Reinforcement Learning for Diffusion Language Models. Referenced via @sheriyuo, X/Twitter April 15, 2026.*
+
+**New toggle:** FEATURES → PHYSICS & CONTROL MODULES → "StableDRL Mode" — default ON, fully toggleable.
+
+**What it does (two changes, always paired):**
+
+1. **Unconditional score clipping** — after every coherence score, if it moved more than 3× from the previous score in either direction, it is clipped back. No conditional trigger that noise can bypass. Every signal treated as a proxy with inherent error. Prevents a single noisy turn from cascading into false drift events.
+
+2. **Self-normalizing injection** — before building pipe injection, `smoothedVar` is divided by the rolling average of the last 8 clipped scores. When the session is uniformly noisy, correction strength scales down automatically. When scores are clean and high, correction is full strength. Bounded adaptive feedback instead of fixed γ values per harness mode.
+
+**Why:** StableDRL proved that for diffusion LLM training, conditional clipping is not stable under noisy proxy ratios — updates that should be clipped bypass the trigger due to estimation error, allowing gradient spikes. The same positive feedback loop exists in VECTOR: noisy coherence score → false drift event → harness escalation → behavior change → more score volatility → more drift. Unconditional clipping + self-normalization breaks the loop.
+
+**Constants added:** `SDRL_JSD_CLIP=0.85`, `SDRL_VAR_CLIP=3.0`, `SDRL_NORM_FLOOR=0.50`, `SDRL_NORM_WIN=8`
+
+**State:** `stabledrlEnabled` — persists to `vector_config`, restores on reload.
+
+---
+
 ## [1.5.5] — 2026-04-15
 
 ### Bug Fix

@@ -1723,6 +1723,14 @@ function computeEfficiencyRatio(text, entropy) {
 // D = rate of change (is variance accelerating or decelerating?)
 // Returns a correction multiplier for the pipe injection strength.
 // Reference: Åström & Hägglund (1995) PID Controllers: Theory, Design, Tuning.
+// ── StableDRL Stability Constants ────────────────────────────
+// Adapted from Li et al. (2026) StableDRL — unconditional clipping + self-normalization
+// for stable proxy-ratio-based updates. Applied here to coherence scoring and injection.
+const SDRL_JSD_CLIP   = 0.85;   // hard cap on JSD score before weighted sum
+const SDRL_VAR_CLIP   = 3.0;    // hard cap on variance ratio (current/prev)
+const SDRL_NORM_FLOOR = 0.50;   // minimum denominator for self-normalization
+const SDRL_NORM_WIN   = 8;      // rolling window for self-norm denominator
+
 const PID_KP = 1.20;   // proportional gain
 const PID_KI = 0.08;   // integral gain
 const PID_KD = 0.40;   // derivative gain
@@ -2524,6 +2532,7 @@ const TuneModal = React.memo(function TuneModal() {
     autoTuneEnabled,setAutoTuneEnabled,lastAutoTune,
     domainAnchor,setDomainAnchor,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
+    stabledrlEnabled,setStabledrlEnabled,
     useEKF,setUseEKF,useParticle,setUseParticle,
     berryPhase,sheTorque,
   } = useContext(TuneCtx);
@@ -2655,6 +2664,7 @@ const TuneModal = React.memo(function TuneModal() {
                 ["Lévy Flight Noise",   levyEnabled,  ()=>setLevyEnabled(p=>!p),  "#4848B8","α-stable heavy-tail noise (α=1.7). Replaces Langevin when on."],
                 ["Ext. Kalman (EKF)",   useEKF,       ()=>setUseEKF(p=>!p),       "#0A7878","Nonlinear Jacobian Kalman. More accurate for OU dynamics."],
                 ["Particle Filter",     useParticle,  ()=>setUseParticle(p=>!p),  "#9A5C08","200-particle SMC. Handles non-Gaussian drift. Blends with Kalman."],
+                ["StableDRL Mode",      stabledrlEnabled, ()=>setStabledrlEnabled(p=>!p), "#C81030","Unconditional JSD clipping + self-normalizing injection. Prevents over-correction loops. (Li et al. 2026)"],
               ].map(([label,val,toggle,col,note])=>(
                 <div key={label} style={{display:"flex",alignItems:"center",gap:8,
                   padding:"6px 10px",borderRadius:4,
@@ -4399,6 +4409,7 @@ export default function VECTOR() {
   const [sdeSigmaOn,      setSdeSigmaOn]      = useState(true);
   const [mtjEnabled,      setMtjEnabled]      = useState(true);
   const [levyEnabled,     setLevyEnabled]     = useState(false);
+  const [stabledrlEnabled,setStabledrlEnabled]= useState(true);  // StableDRL: unconditional clipping + self-norm. Default ON.
   const [levyAlpha,       setLevyAlpha]       = useState(LEVY_ALPHA_DEFAULT);
   const [useEKF,          setUseEKF]          = useState(false);  // Extended Kalman Filter
   const [useParticle,     setUseParticle]     = useState(false);  // Particle Filter
@@ -4657,6 +4668,7 @@ export default function VECTOR() {
         if (p.levyAlpha!=null)         setLevyAlpha(p.levyAlpha);
         if (p.useEKF!=null)            setUseEKF(p.useEKF);
         if (p.useParticle!=null)       setUseParticle(p.useParticle);
+        if (p.stabledrlEnabled!=null)  setStabledrlEnabled(p.stabledrlEnabled);
         if (p.autoTuneEnabled!=null)   setAutoTuneEnabled(p.autoTuneEnabled);
         if (p.caPassRate!=null)        setCaPassRate(p.caPassRate);
         if (p.domainAnchor!=null)      setDomainAnchor(p.domainAnchor);
@@ -4750,7 +4762,7 @@ export default function VECTOR() {
           mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
           sdeAlphaVal,sdeBetaVal,sdeSigmaVal,
           sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
-          mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
+          mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,
           postAuditThresh,showSdePaths,pathOpacity,
           advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
           showMhtStudy,showPoole,caPassRate,
@@ -4992,11 +5004,21 @@ export default function VECTOR() {
       if (featPipe && pidPre.output > 2.0 && harnessMode === "audit" && turn >= 3) {
         setHarnessMode("moderate");
       }
+      // StableDRL self-normalization: scale smoothedVar by rolling window sum
+      // so correction strength adapts to actual noise level, not fixed thresholds
+      const sdrlVar = (stabledrlEnabled && scoreHistory.length >= 2)
+        ? (()=>{
+            const win = [...scoreHistory.slice(-SDRL_NORM_WIN), rawScore];
+            const clippedSum = win.reduce((s,v)=>s+Math.min(v, SDRL_JSD_CLIP), 0);
+            const normFactor = Math.max(clippedSum / win.length, SDRL_NORM_FLOOR);
+            return (smoothedVar??0) / normFactor;
+          })()
+        : (smoothedVar??0);
       const pipeInj=featPipe?buildPipeInjection(
-        smoothedVar??0,kalmanState.x,kalmanState.P,
+        sdrlVar,kalmanState.x,kalmanState.P,
         calmStreak,driftCount,harnessMode,turn,hSignalCount,bSignalCount,
         adaptiveSigmaOn?adaptedSigma:null,
-        cfg // V1.5.9: pass cfg so preset varCaution/Decoherence/Calm apply
+        cfg
       ):"";
       if (featPipe&&turn>=2)
         setLastPipeState({turn,var:(smoothedVar??0).toFixed(6),kalmanX:kalmanState.x.toFixed(4),calmStreak,driftCount,hSignalCount,bSignalCount});
@@ -5157,6 +5179,16 @@ export default function VECTOR() {
       let rawScore=0.88;
       try {
         rawScore=turn<2?0.88:await computeSemanticCoherence(content_raw,newMessages,{tfidf:mathTfidf,jsd:mathJsd,length:mathLen,structure:mathStruct,persistence:mathPersist},mathRepThresh,workerRef);
+        // StableDRL: unconditional score clipping — treats every proxy score as having inherent error
+        // Prevents noisy spikes from propagating into Kalman/GARCH/drift detection
+        // Reference: Li et al. (2026) StableDRL — unconditional clipping for stable proxy updates
+        if (stabledrlEnabled && scoreHistory.length >= 2) {
+          const prevScore = scoreHistory[scoreHistory.length-1];
+          const ratio = prevScore > 0.01 ? rawScore / prevScore : 1.0;
+          if (ratio > SDRL_VAR_CLIP) rawScore = prevScore * SDRL_VAR_CLIP;
+          if (ratio < 1/SDRL_VAR_CLIP) rawScore = prevScore / SDRL_VAR_CLIP;
+          rawScore = Math.min(Math.max(rawScore, 0.30), 0.99);
+        }
         setLastScore(rawScore);
       } catch(cohErr) {
         const now2=new Date().toISOString();
@@ -5554,6 +5586,7 @@ export default function VECTOR() {
      autoTuneEnabled,feedbackState,provider,
      kalmanHistory,featIntegrityFloor,integrityThreshold,
      useEKF,useParticle,particleState,
+     stabledrlEnabled,
      evolutionHistory,vectorFrontier,lastAutoTune]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
@@ -5732,6 +5765,7 @@ export default function VECTOR() {
     domainAnchor,setDomainAnchor,
     useEKF,setUseEKF,useParticle,setUseParticle,
     levyEnabled,setLevyEnabled,levyAlpha,setLevyAlpha,
+    stabledrlEnabled,setStabledrlEnabled,
     mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,
     showIntegrityFloor,setShowIntegrityFloor,featIntegrityFloor,setFeatIntegrityFloor,
     integrityThreshold,setIntegrityThreshold,integrityBreachCount,
@@ -5742,7 +5776,7 @@ export default function VECTOR() {
       featBSig,featHSig,featPrune,featZeroDrift,nPaths,postAuditMode,postAuditThresh,
       adaptiveSigmaOn,adaptedSigma,adaptationRate,
       sdeAlphaVal,sdeBetaVal,sdeSigmaVal,sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
-      mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,
+      mtjEnabled,mtjDelta,levyEnabled,levyAlpha,useEKF,useParticle,stabledrlEnabled,
       customMutePhrases,mutePhraseInput,
       mathEpsilon,mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
       mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,

@@ -113,6 +113,7 @@ When instability is detected, VECTOR injects a corrective directive into the nex
 | Mutual information | Information theory | Statistical dependence between turns |
 | Realized volatility | Quantitative finance | Fast-reacting variance complement to GARCH |
 | Lyapunov bound | Dynamical systems | Live stability guarantee of SDE parameters |
+| StableDRL clipping | RL stability (Li et al. 2026) | Unconditional ratio clipping + self-normalization prevents correction feedback loops |
 
 **Core equation:**
 ```
