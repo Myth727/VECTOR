@@ -6,7 +6,7 @@
 
 © 2026 Hudson & Perry Research  
 **Authors:** David Hudson ([@RaccoonStampede](https://x.com/RaccoonStampede)) · David Perry ([@Prosperous727](https://x.com/Prosperous727))  
-**License:** MIT · [Live Demo](https://vector2026.vercel.app/)
+**Version:** V1.7.3 · **License:** MIT · [Live Demo](https://vector2026.vercel.app/)
 
 > ⚠ RESEARCH & DEVELOPMENT — NOT FOR CLINICAL OR LEGAL USE.  
 > All outputs are mathematical proxy indicators. No warranty expressed or implied.
@@ -17,17 +17,17 @@
 
 Most generative systems produce outputs and hope for the best.
 
-VECTOR treats sequential generation as what it actually is: a stochastic process that can destabilize. It measures volatility in real time, detects when the system is drifting toward degraded output, and injects corrective signals before the output degrades further.
+VECTOR treats sequential generation as what it actually is: a stochastic process that can destabilize. It measures volatility in real time, detects when a system is drifting toward degraded output, and injects corrective signals before the output degrades further.
 
-That's not prompt engineering. That's a feedback control loop.
+**Accurate classification:** VECTOR is a high-dimensional observability engine with a soft heuristic controller. It is not a provably safe control system — all outputs are proxy indicators. The correction loop is advisory, not enforced. See Validation Status below for what has and has not been proven.
 
 **The core loop:**
 ```
 Score output → Estimate state (Kalman) → Track volatility (GARCH) →
-Detect instability → Inject correction (u_drift) → Repeat
+Detect instability → Inject correction (u_drift) → Measure effect (ΔC) → Repeat
 ```
 
-**What this means in practice:** When a generative system starts drifting — getting sycophantic, inflating claims, losing context, contradicting itself, producing degraded output — VECTOR catches it mathematically and corrects dynamically. Not after the fact. During.
+**What this means in practice:** When a generative system starts drifting — getting sycophantic, inflating claims, losing context, contradicting itself — VECTOR catches it mathematically and injects corrective directives dynamically. Starting V1.7.2, it also measures whether those corrections actually improved coherence (causal delta), building the evidence base for future calibration.
 
 ---
 
@@ -115,6 +115,7 @@ When instability is detected, VECTOR injects a corrective directive into the nex
 | Lyapunov bound | Dynamical systems | Live stability guarantee of SDE parameters |
 | StableDRL clipping | RL stability (Li et al. 2026) | Unconditional ratio clipping + self-normalization prevents correction feedback loops |
 | Heston Full Truncation | Numerical methods | Eliminates absorption bias in variance simulation — clamps inside drift/diffusion terms |
+| CIR/OU scale normalization | Signal processing | Normalizes CIR/Heston/Vasicek/SABR paths to zero-mean unit-variance before drift detection — prevents false drift events from scale mismatch |
 
 **Core equation:**
 ```
@@ -152,6 +153,7 @@ dW_t = b · √dt · z · η
 | **Quick Tools Drawer** | CALC (SDE/GARCH calculator), VERIFY (15 live session checks), EXPORT (CSV/JSONL/TXT) |
 | **Demo Mode** | Run any prompt with and without VECTOR correction side by side. Baseline scored against user messages only — clean independent comparison. |
 | **RLHF→SDE Bridge** | -1 ratings on drifted turns feed back into the SDE sigma parameter — the engine learns from confirmed correction failures. |
+| **Causal Delta (A1)** | After every correction turn, VECTOR logs ΔC for k=1..5 subsequent turns against a bin-stratified baseline. Measures whether pipe injection actually improved coherence. Passive Phase B data collection — every session generates labeled evidence. |
 | **Advanced Math Sidebar** | Live readout of Lyapunov stability bound, PID output, Realized Volatility, Mutual Information, Fisher Information, LZ Complexity, Berry Phase, SHE Torque. |
 
 ---
@@ -201,9 +203,15 @@ dW_t = b · √dt · z · η
 
 ## Validation Status
 
-**Confirmed:** SDE math · Kalman filter · GARCH(1,1) · TF-IDF+JSD scoring · pipe injection · behavioral signal detection · per-preset GARCH tuning · epsilon parameterization · post-audit dual Kalman · Langevin/Neel-Brown math · EDM parallel discovery (Science Advances April 2026 independently arrived at same 45° angular gate VECTOR uses for drift detection)
+**Confirmed:** SDE math · Kalman filter · GARCH(1,1) · TF-IDF+JSD scoring · pipe injection · behavioral signal detection · per-preset GARCH tuning · epsilon parameterization · post-audit dual Kalman · Langevin/Neel-Brown math · EDM parallel discovery (Science Advances April 2026 independently confirmed same 45° angular gate VECTOR uses for drift detection)
 
-**Requires validation:** C-score vs human judgment · H-signal false positive rate · 623.81 Hz physical anchor · Langevin/MTJ empirical co-validation against actual spintronic hardware · cross-domain applicability claims
+**Active (V1.7.2+):** Causal delta measurement — ΔC_policy vs ΔC_baseline logged per session across k=1..5 lags post-injection. Bin-stratified to eliminate selection bias. Building Phase B labeled dataset passively.
+
+**Requires validation:** C-score vs human judgment (target r > 0.6) · H-signal false positive rate (need 100 labeled examples, AUC > 0.80) · GARCH on semantic drift (heuristic, not proven) · 623.81 Hz physical anchor · Langevin/MTJ empirical co-validation · cross-domain applicability beyond LLM conversations
+
+**Roadmap — Phase B:** Collect N ≥ 100 labeled sessions (normal / degraded / failure). Fit state-space model via EM algorithm. Run logistic regression: `P(failure | C_t, σ²_t, k_t, H_t, B_t)`. Accept only if AUC > 0.80. See CONTRIBUTING.md for full spec.
+
+**Honest system classification:** Observability engine + heuristic soft controller. Not a provably safe control system. Signals are uncalibrated proxies until Phase B completes. Do not use for autonomous decisions.
 
 ---
 
@@ -240,17 +248,33 @@ All sidebar math metrics (Lyapunov, PID, Realized Vol, Mutual Info, Fisher Info,
 
 ## SDK
 
+The `sdk/` directory is a fully standalone TypeScript engine — all VECTOR math available without the React UI. Use in Node.js pipelines, agents, offline scoring, or any TypeScript project.
+
+> **Note:** The SDK is updated alongside VECTOR.jsx releases but may occasionally lag one version. The definitive source is always VECTOR.jsx.
+
+**What the SDK exports:**
+- **SDE simulation:** OU, CIR (with Feller check), Heston (Full Truncation), Vasicek, SABR, Lévy noise, path normalization, Lyapunov bound
+- **State estimation:** Kalman, EKF, Particle Filter (200-particle SMC)
+- **Variance modeling:** GARCH(1,1), PID controller, Realized Volatility, StableDRL clipping
+- **Signal detection:** H-signals, B-signals, Mutual Information, Fisher Information, Kolmogorov Complexity, Berry Phase, SHE Torque, EWMA
+- **Coherence scoring:** TF-IDF + JSD with exponential Bayesian blending
+- **Engine:** Pipe injection, RAG, session health, context pruning
+
 ```typescript
-import { computeCoherence, kalmanStep,
-  updateSmoothedVariance, buildPipeInjection,
-  PRESETS } from './sdk/index';
+import {
+  computeCoherence, kalmanStep, updateSmoothedVariance,
+  buildPipeInjection, simulateCIR, ekfStep,
+  computeMutualInformation, computeLyapunovBound,
+  stabledrlClipScore, PRESETS
+} from './sdk/index';
 
 const cfg    = PRESETS.CIRCUIT;
 const score  = computeCoherence(response, history);
 const newVar = updateSmoothedVariance(scoreHistory, prev, cfg);
 const kalman = kalmanStep(state, score, turn * (2*Math.PI/12), SDE_PARAMS);
-const pipe   = buildPipeInjection(newVar, kalman.x, kalman.P,
-  calmStreak, driftCount, 'audit', turn, 0, 0, null, cfg);
+const pipe   = buildPipeInjection({ smoothedVar: newVar, kalmanX: kalman.x,
+  kalmanP: kalman.P, calmStreak, driftCount, harnessMode: 'audit', turn,
+  hSignalCount: 0, bSignalCount: 0, adaptedSigma: null });
 ```
 
 ---

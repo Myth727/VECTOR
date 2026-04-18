@@ -48,9 +48,44 @@ Document H-signal and B-signal counts across matched sessions in normal vs priva
 
 ---
 
-## Phase A/B Execution Plan — ChatGPT Cathedral (logged April 16, 2026)
+## V1.7.3 Causal Delta Improvements (logged April 17, 2026)
 
-Source: ChatGPT Cathedral Option 3 derivation response.
+### R1 — Delay Bias Fix (k=1..5)
+Previous A1 logged ΔC_policy only at t+1. External AI audit identified
+that injection effects may take 2-3 turns to manifest, making single-step
+measurement falsely classify delayed improvements as no-effect.
+
+Fix: kOffset = turn - lastInjectionTurn. Any turn where kOffset ∈ [1,5]
+is in the policy window. deltaCPolicyK records which lag k produced the
+delta. Sidebar shows delta plus k value.
+
+### R2 — Selection Bias Fix (state binning)
+Previous A1 compared policy delta against a flat session rolling mean.
+Policy only fires in drifted (low-coherence) states, so E[C|policy] and
+the baseline were drawn from different state distributions — an unfair
+comparison.
+
+Fix: bin recent history into low (<0.50), mid (0.50–0.75), high (>0.75)
+coherence bins. Baseline mean computed only from turns in the same bin
+as the current score. Falls back to flat rolling mean when bin is sparse
+(<2 turns). Eliminates selection bias by comparing within state regions.
+
+### Shadow Policy — Logged for Phase B
+External AI audit suggested adding a shadow policy branch:
+  C_shadow = predicted_next_C_without_policy()
+This requires a predictive model that does not yet exist.
+Logged here as a Phase B target — implement after A2 data exists.
+
+### New coherenceData fields
+- deltaCPolicy: ΔC vs binned baseline in policy window (k=1..5)
+- deltaCPolicyK: which lag k (1–5) produced the delta
+- deltaCBaseline: ΔC vs binned baseline on non-injection turns (control)
+
+---
+
+## Phase A/B Execution Plan (logged April 16, 2026)
+
+Source: External AI audit — Option 3 derivation.
 Full A, Q, H, R estimation pipeline for the VECTOR state-space model.
 
 ---
@@ -185,15 +220,15 @@ Replace current linear turnWeight ramp with:
   score = α(t) * rawScore * penalty + (1 - α(t)) * prior
 
 Initial τ = 5. Tune against session data.
-Strictly dominates both current implementation and ChatGPT's
+Strictly dominates both current implementation and the
 original suggestion. Smooth continuous transition, no hard cutoff.
 Balances G1 (early stabilization) and G2 (anomaly sensitivity).
 
 ---
 
-## ChatGPT Cathedral Audit Findings (logged April 16, 2026)
+## External Audit Findings (logged April 16, 2026)
 
-Source: ChatGPT Cathedral deep audit of VECTOR V1.6.0
+Source: External AI deep audit of VECTOR V1.6.0
 Status per finding after independent verification:
 
 ### CONFIRMED BUGS — fix next session
@@ -238,7 +273,7 @@ long-session use cases emerge.
 ### PUSHED BACK — not bugs
 
 **Q1 — Bayesian Prior Order (CURRENT ORDER IS CORRECT)**
-ChatGPT suggested: apply prior first, then repetition penalty.
+Audit suggested: apply prior first, then repetition penalty.
 Verified: this would produce 0.458 vs current 0.695 at turn 1 with
 a repetitive early response — MORE punishing, not less. The prior's
 purpose is to protect early sessions from noisy scores. Applying
@@ -249,7 +284,7 @@ the stated intent. No change needed.
 **Q2 — GARCH Entropy Timing (NOT A BUG)**
 Verified in sendMessage: hallucinationAssessment computed at SM line 198,
 updateSmoothedVariance called at SM line 303. Entropy is from the
-current turn's content, passed directly. Not stale. ChatGPT's concern
+current turn's content, passed directly. Not stale. The concern
 was valid to raise, implementation is correct.
 
 ### SYSTEM-LEVEL FINDINGS — all valid, all acknowledged
