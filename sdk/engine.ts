@@ -205,6 +205,10 @@ export interface CoherenceDataPoint {
   sheTorque?:        number | null;
   entropy?:          number | null;
   vocabGrowth?:      number | null;
+  // A1 causal delta fields (V1.7.2+)
+  deltaCPolicy?:     number | null;  // ΔC on turns k=1..5 after injection vs binned baseline
+  deltaCPolicyK?:    number | null;  // which lag k produced this delta (1–5)
+  deltaCBaseline?:   number | null;  // ΔC on non-injection turns (control group)
 }
 
 /**
