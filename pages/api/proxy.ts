@@ -51,6 +51,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       requestHeaders['anthropic-version'] = '2023-06-01';
       requestBody = {
         ...req.body,
+        model:      model      || DEFAULT_MODELS[provider],
+        max_tokens: max_tokens || 1000,
         ...(safeTemp != null ? { temperature: safeTemp } : {}),
         ...(safeTopP != null ? { top_p:       safeTopP } : {}),
       };
