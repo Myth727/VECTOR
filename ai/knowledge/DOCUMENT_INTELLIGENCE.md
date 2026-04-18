@@ -29,7 +29,7 @@ or by applying these principles when working with any vision-capable model.
 ## Part 1 — Eight Parsing Task Modes
 
 Each mode is a distinct task. Use the exact prompt string. The model switches behavior
-by prompt alone — no vectorural changes needed between tasks.
+by prompt alone — no architectural changes needed between tasks.
 
 ---
 
@@ -831,7 +831,8 @@ for more conversational responses.
 
 ## Part 12 — Elo Evaluation Rubric (Full Scoring System)
 
-Source: `tools/elo_score_prompt.py`. The complete rubric used to compare any two
+Source: `elo_score_prompt.py` from the upstream dots.ocr repository
+(github.com/rednote-hilab/dots.ocr). The complete rubric used to compare any two
 OCR model outputs. Reusable for evaluating any document parsing system.
 
 **Evaluation is conducted by a judge LLM** (Gemini Flash in production) comparing
@@ -1127,7 +1128,8 @@ Example custom prompts: "What is the title of this document?", "Describe the cha
 
 ## Part 12 — Elo Evaluation Rubric
 
-Source: tools/elo_score_prompt.py. The complete scoring system for comparing any two
+Source: `elo_score_prompt.py` from the upstream dots.ocr repository
+(github.com/rednote-hilab/dots.ocr). The complete scoring system for comparing any two
 OCR model outputs. Reusable for any document parsing evaluation.
 
 A judge LLM (Gemini Flash in production) compares two model outputs against the source image.

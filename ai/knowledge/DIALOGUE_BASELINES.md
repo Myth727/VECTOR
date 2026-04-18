@@ -75,8 +75,7 @@ by design. Low entropy signal may fire. Check user intent before flagging.
 | 0.65–0.74 | Acceptable | Some drift, monitor next 2 turns |
 | 0.50–0.64 | Caution zone | Topic shift, length change, or early drift |
 | 0.35–0.49 | Probable drift | AI went off-task, multiple questions, elaboration |
-| 0.30–0.34 | Severe drift | Unrequested content, performance mode, context loss |
-| < 0.30 (floor) | Maximum drift | Session integrity compromised |
+| 0.30–0.34 (floor) | Severe drift | Unrequested content, performance mode, context loss. Score floor — clamped by the scorer. |
 
 ---
 

@@ -5,7 +5,7 @@
 
 This document defines VECTOR's three hallucination proxy signals (H-signals) in precise
 detail — what they detect, when they fire correctly, when they fire incorrectly, and how
-to interpret them. It also covers the two additional entropy-based signals added added later.
+to interpret them. It also covers the two additional entropy-based signals added later.
 
 No H-signal constitutes a confirmed hallucination. They are statistical proxies.
 The FALSE+ button in the LOG modal is the correction mechanism.
@@ -106,15 +106,22 @@ fabricated instead of reading the document.
 
 ## Signal 3 — Self-Contradiction
 
-**Fires when:** Average TF-IDF similarity between current response and last 6 related
-assistant turns falls below 15%
+**Fires when:** Current response shows 2+ negation markers AND more than 2× the negation
+density of topically-related prior turns (last 6 assistant turns with TF-IDF > 0.30).
 
-**"Related" definition:** Turns where the user's message had > 10% TF-IDF overlap with
-the current user message. Topic-filtered — doesn't flag cross-topic transitions.
+**V1.8.0 note:** Prior to V1.8.0, this signal used an averaged-similarity threshold that
+was mathematically impossible to trigger (filter on sim>X, then check avg < lower Y
+against the same set). The current negation-density heuristic is a proxy only — it
+catches reversals and corrections, not semantic contradictions per se. Semantic claim
+comparison via embeddings is planned for V2.
+
+**"Related" definition:** Turns where assistant content had > 30% TF-IDF overlap with
+the current response. Topic-filtered — doesn't flag cross-topic transitions.
 
 **True positive scenario:**
-Session establishes "the API returns JSON." Three turns later AI states "the API returns
-XML." Same topic, contradicting established fact. Signal fires correctly.
+Session establishes "the API returns JSON." Three turns later AI states "the API does
+not return XML. Actually, it never did. That was incorrect." Multiple negation markers
+appear on a topically-related response. Signal fires correctly.
 
 **False positive scenarios:**
 

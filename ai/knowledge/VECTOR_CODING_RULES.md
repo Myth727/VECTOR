@@ -5,7 +5,7 @@
 
 If you are an AI model working on VECTOR code — generating patches, reviewing changes,
 suggesting features, or debugging — read this file before touching anything.
-These are not preferences. They are vectorural invariants. Breaking any of them
+These are not preferences. They are architectural invariants. Breaking any of them
 has caused real regressions in prior sessions.
 
 ---
@@ -21,7 +21,7 @@ or restructuring into a folder. The single-file constraint is intentional:
 - Claude artifact environment has no module system
 - Every split creates a deployment path that doesn't work
 
-Current size: ~6,800 lines. This is correct. Do not optimize for file size.
+Current size: ~7,600 lines. This is correct. Do not optimize for file size.
 
 ---
 
@@ -41,11 +41,11 @@ Bump the version number on **every functional change**. No exceptions.
 
 Version string lives in the file header:
 ```javascript
-//  VECTOR — Volatility-Sensitive Correction Engine
+const VECTOR_VERSION = "V1.8.0";
 ```
 
-Also in `package.json` (`"version": "2.2.0"`), `FRAMEWORK.md`, `SECURITY.md`,
-`CONTRIBUTING.md`, `GITHUB_SETUP.md`, and `pages/index.tsx` title tag.
+Also in `package.json` (`"version": "1.8.0"`), `README.md`, `CHANGELOG.md`,
+`FRAMEWORK.md`, and `CONTRIBUTING.md`.
 
 If you change VECTOR.jsx, you must also update those files.
 Mismatched versions across files create confusion for users and contributors.
@@ -162,14 +162,19 @@ Raw `localStorage` calls break silently in private browsing mode and the Claude 
 
 | Key | Purpose |
 |-----|---------|
-| `arch_fb` | AutoTune feedback profiles |
-| `arch_dp` | Display preferences |
-| `arch_pinned` | Pinned document contents |
-| `arch_mem` | Session memory summaries |
-| `vector_api_key` | API key (user-provided) |
-| `vector_provider` | Provider selection |
-| `vector_config` | Main settings |
-| `vector_data` | Session metrics (legacy V1 key, do not rename) |
+| `vector_config` | Main settings, feature toggles, math constants, Advanced tab state |
+| `vector_data` | Session metrics — coherence scores, events, errors, corrections |
+| `vector_fb` | AutoTune feedback profiles |
+| `vector_dp` | Display preferences |
+| `vector_pinned` | Pinned document contents |
+| `vector_mem` | Session memory summaries |
+| `vector_api_key` | User-provided API key (only if explicitly saved) |
+| `vector_provider` | Provider selection (anthropic/openai/grok) |
+| `vector_frontier` | Meta-Harness best-config-per-context |
+| `vector_evolution` | Meta-Harness evolution JSONL |
+| `vector_notes_flush` | Research notes uncontrolled-textarea flush buffer |
+
+Per-session archival prefixes: `vector_chat_*`, `vector_events_*`, `vector_session_*`, `vector_evolution_*`.
 
 Do not introduce new keys without documenting them here and in `SECURITY.md`.
 
@@ -260,7 +265,7 @@ string replacement fails on files with mixed unicode. Use line-based insertion i
 
 ## Release Checklist Location
 
-The 15-point release checklist lives at `.claude/evals/VECTOR_EVALS.md`.
+The 15-point release checklist lives at `evals/VECTOR_EVALS.md`.
 Run all 15 checks before uploading any version to GitHub.
 Vercel redeploys automatically on commit — broken code goes live immediately.
 
@@ -280,8 +285,7 @@ Vercel redeploys automatically on commit — broken code goes live immediately.
 | `FRAMEWORK.md` | Root |
 | `SECURITY.md` | Root |
 | `CONTRIBUTING.md` | Root |
-| `GITHUB_SETUP.md` | Root |
-| `VECTOR_EVALS.md` | `.claude/evals/VECTOR_EVALS.md` |
+| `VECTOR_EVALS.md` | `evals/VECTOR_EVALS.md` |
 | Knowledge seeds | `ai/knowledge/` |
 
 ---
