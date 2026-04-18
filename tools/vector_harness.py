@@ -125,8 +125,13 @@ def compute_coherence(new_content: str, history: list[dict]) -> float:
     rep_pen = 0.65 if overlap > 0.65 else 1.0
     raw = (0.25*vocab + 0.25*jsd_score + 0.25*len_score +
            0.15*struct + 0.10*persist) * rep_pen
-    turn_w = min(len(ah) / 10, 1.0)
-    return min(max(turn_w * raw + (1 - turn_w) * 0.75, 0.30), 0.99)
+    # V1.7.0: Exponential Bayesian blending — α(t) = 1 − exp(−t/τ), τ=5.
+    # Smooth continuous transition from prior-dominated (early) to signal-dominated (late).
+    # Matches sdk/coherence.ts. Replaced pre-V1.7.0 linear turn_w ramp.
+    TAU_BLEND = 5.0
+    alpha_t = 1 - math.exp(-len(ah) / TAU_BLEND)
+    prior = 0.75
+    return min(max(alpha_t * raw + (1 - alpha_t) * prior, 0.30), 0.99)
 
 
 # ── Kalman filter ─────────────────────────────────────────────────────────────

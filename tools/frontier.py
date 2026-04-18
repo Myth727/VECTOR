@@ -119,7 +119,7 @@ def show_evolution_report():
         delta = h.get("delta", 0)
         sign  = "+" if delta >= 0 else ""
         c     = "32" if delta > 0.01 else "31" if delta < -0.01 else "33"
-        print(f"  iter={h.get('iteration',?):>2} "
+        print(f"  iter={h.get('iteration','?'):>2} "
               f"preset={h.get('preset','?'):<12} "
               f"avg_c={h.get('avg_c',0):.3f} "
               f"delta={color(c, f'{sign}{delta:.3f}')} "

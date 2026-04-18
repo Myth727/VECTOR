@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -100,7 +101,7 @@ def build_proposer_prompt(transcript_summary: dict, history: list,
         for h in history[-5:]:
             delta_str = (f"+{h['delta']:.3f}" if h.get('delta', 0) >= 0
                         else f"{h.get('delta',0):.3f}")
-            hist_str += (f"iter={h.get('iteration',?)} preset={h.get('preset',?)} "
+            hist_str += (f"iter={h.get('iteration','?')} preset={h.get('preset','?')} "
                         f"avg_c={h.get('avg_c',0):.3f} delta={delta_str} "
                         f"axis={h.get('axis','?')} outcome={h.get('outcome','?')}\n")
 
@@ -187,8 +188,6 @@ def run_evolution(args):
     Main evolution loop — adapted from meta_harness.py run_evolve().
     Iterate: score → propose → score candidates → update frontier → repeat.
     """
-    import re  # needed inside this scope
-
     transcript = json.loads(Path(args.transcript).read_text())
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
@@ -285,8 +284,6 @@ def run_evolution(args):
 
 
 def main():
-    import re
-
     parser = argparse.ArgumentParser(description="VECTOR Meta-Evolution Loop")
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--preset",     default="DEFAULT", choices=list(PRESETS))
@@ -302,5 +299,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import re
     main()

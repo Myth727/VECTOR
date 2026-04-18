@@ -65,7 +65,7 @@ only aggregate metrics.
 ## Experience and Logging
 
 **Offline traces:** Export from VECTOR UI → EXPORT tab → JSONL Events
-Convert to transcript format with: `python tools/vector_harness.py --convert`
+Transcript format is documented in `tools/tools_README.md`.
 
 **Log structure:**
 ```

@@ -10,17 +10,17 @@ Meta-Harness searches over harness configurations offline to find optimal parame
 
 ```
 tools/
-  vector_harness.py    ← offline VECTOR scoring engine (no browser required)
-  meta_loop.py         ← Meta-Harness style evolution loop
-  frontier.py          ← frontier tracker (best config per context type)
-  domain_spec.md       ← fill this out before running (see ONBOARDING below)
-  requirements.txt     ← anthropic, numpy
+  vector_harness.py        ← offline VECTOR scoring engine (no browser required)
+  meta_loop.py             ← Meta-Harness style evolution loop
+  frontier.py              ← frontier tracker (best config per context type)
+  domain_spec.md           ← fill this out before running (see ONBOARDING below)
+  tools_requirements.txt   ← anthropic (only external dep)
 ```
 
 ## Quick Start
 
 ```bash
-pip install -r tools/requirements.txt
+pip install -r tools/tools_requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Score a transcript
