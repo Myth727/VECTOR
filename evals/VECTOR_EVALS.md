@@ -38,8 +38,8 @@ Each eval is a manual check against the file or the running artifact. Mark PASS 
 
 ## EVAL-04 — Compressed Pipe Format
 **Tests:** Pipe injection is compact, not verbose.
-**How:** Search `VECTOR.jsx` for `buildPipeInjection`. Return statement must start with `"[A|t"`.
-**Pass:** `return"[A|t"+turn` present. No `[SYSTEM_INTERNAL` string in the function.
+**How:** Search `VECTOR.jsx` for `buildPipeInjection`. Return statement must start with `"[V|t"`.
+**Pass:** `return"[V|t"+turn` present. No `[SYSTEM_INTERNAL` string in the function.
 **Fail:** Old verbose format still present.
 
 ---
@@ -54,7 +54,7 @@ Each eval is a manual check against the file or the running artifact. Mark PASS 
 
 ## EVAL-06 — Feedback State Persists
 **Tests:** Feedback loop saves and loads from localStorage.
-**How:** Search for `saveFeedbackState` and `loadFeedbackState` as function definitions referencing `arch_fb` key.
+**How:** Search for `saveFeedbackState` and `loadFeedbackState` as function definitions referencing `vector_fb` key.
 **Pass:** Both functions present with correct key.
 **Fail:** Either function missing.
 
@@ -109,10 +109,13 @@ Each eval is a manual check against the file or the running artifact. Mark PASS 
 ---
 
 ## EVAL-13 — Version Strings Consistent
-**Tests:** All user-visible version strings match current version.
-**How:** Search for version strings in the file. No version numbers should appear in UI-facing strings.
-**Pass:** No live UI version says V2.1 or earlier.
-**Fail:** Any version mismatch in rendered UI.
+**Tests:** Canonical VECTOR_VERSION is defined, rendered in the header, and matches package.json.
+**How:**
+1. Search `VECTOR.jsx` for `const VECTOR_VERSION = "V`. Must be present.
+2. Search for `{VECTOR_VERSION}` inside the JSX header render (subtitle area).
+3. Compare the string value in `VECTOR_VERSION` against `version` field in `package.json` (drop the `V` prefix — e.g. `V1.8.0` in jsx matches `"1.8.0"` in package.json).
+**Pass:** Constant defined, rendered in UI, matches package.json.
+**Fail:** Any of the three missing or mismatched.
 
 ---
 
@@ -156,15 +159,7 @@ Each eval is a manual check against the file or the running artifact. Mark PASS 
 
 ## Where This File Lives
 
-This file belongs at `.claude/evals/VECTOR_EVALS.md` in the repo.
-
-To create it on GitHub:
-1. Tap **Add file → Create new file**
-2. In the name box type: `.claude/evals/VECTOR_EVALS.md`
-3. Paste this file
-4. Commit
-
-GitHub creates the `.claude/evals/` folder automatically.
+This file lives at `evals/VECTOR_EVALS.md` in the repo.
 
 ---
 
