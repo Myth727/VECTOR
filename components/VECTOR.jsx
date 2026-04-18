@@ -9,6 +9,11 @@ import {
 //  © 2026 Hudson & Perry Research
 //  ⚠ RESEARCH & DEVELOPMENT — NOT FOR CLINICAL OR LEGAL USE
 
+// ── Version ────────────────────────────────────────────────────
+// Canonical version string. Must match package.json, README.md,
+// CHANGELOG.md (top entry), and FRAMEWORK.md / CONTRIBUTING.md references.
+const VECTOR_VERSION = "V1.8.0";
+
 // ── Deployment ─────────────────────────────────────────────────
 // Environment detection: use /api/proxy on Vercel, direct API everywhere else
 // Vercel deployment hostname contains "vercel.app" or is the specific deployment
@@ -1533,17 +1538,22 @@ function checkSelfContradiction(responseText, history) {
   const ah=history.filter(m=>m.role==="assistant");
   if (ah.length<2) return false;
   const respT=tokenize(responseText);
-  // smoothed IDF. With working TF-IDF, on-topic continuations score 0.30-0.50.
-  // Old 0.35 threshold was at the edge of normal on-topic scoring and missed
-  // related turns. 0.25 catches same-topic turns more reliably.
+  // Find topically-related prior turns via TF-IDF overlap.
   const related=ah.slice(-6).filter(m=>{
     const sim=tfidfSimilarity(respT,tokenize(getTextFromContent(m.content)));
-    return sim>0.25;
+    return sim>0.30;
   });
   if (!related.length) return false;
-  const avgSim=related.reduce((s,m)=>
-    s+tfidfSimilarity(respT,tokenize(getTextFromContent(m.content))),0)/related.length;
-  return avgSim<0.15;
+  // V1.8.0: negation-density heuristic. Previous logic (avgSim < 0.15 over a set
+  // filtered to sim > X) was mathematically impossible to trigger. This proxy
+  // fires when a response shows a sharp rise in negation markers vs the prior
+  // related turns — a weak indicator of reversal. Not semantic contradiction
+  // detection; will be superseded by embedding-based claim similarity in V2.
+  const NEG=/\b(not|no|don'?t|isn'?t|aren'?t|wasn'?t|weren'?t|wouldn'?t|couldn'?t|shouldn'?t|never|incorrect|wrong|actually|instead|contrary)\b/gi;
+  const respNeg=(responseText.match(NEG)||[]).length;
+  const priorAvg=related.reduce((s,m)=>
+    s+((getTextFromContent(m.content).match(NEG)||[]).length),0)/related.length;
+  return respNeg>=2 && respNeg>priorAvg*2.0;
 }
 
 function assessHallucinationSignals(responseText, smoothedVar, attachments, history, cfg) {
@@ -4790,7 +4800,7 @@ export default function VECTOR() {
           postAuditThresh,showSdePaths,pathOpacity,
           advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
           showMhtStudy,showPoole,caPassRate,
-          pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,
+          pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
           showIntegrityFloor,featIntegrityFloor,integrityThreshold,
           mhtPsi,mhtKappa,mhtTau,mhtGamma,mhtCap,mhtAlpha,mhtBeta,mhtSigma,
           userRailsEnabled,userCustomRails,sdeModel,
@@ -4806,9 +4816,9 @@ export default function VECTOR() {
      nPaths,postAuditMode,customMutePhrases,researchNotes,mathEpsilon,
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,setSdeAlphaVal,sdeBetaVal,setSdeBetaVal,sdeSigmaVal,setSdeSigmaVal,
-    sdeAlphaOn,setSdeAlphaOn,sdeBetaOn,setSdeBetaOn,sdeSigmaOn,setSdeSigmaOn,
-    mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,levyEnabled,levyAlpha,
+     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,
+     sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
+     mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,showSdePaths,pathOpacity,
      advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,
      caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
@@ -4828,9 +4838,11 @@ export default function VECTOR() {
           smoothedVar,scoreHistory:scoreHistory.slice(-200),ragCache,kalmanState,
         }));
     } catch(e) { console.warn("vector: data save failed",e); }
-  // R1 fix: added missing deps — calmStreak/smoothedVar/kalmanState/driftCount/turnCount
-  // were saved but not in dep array; changes without coherenceData change were not persisted.
-  },[coherenceData,bookmarks,eventLog,driftCount,turnCount,calmStreak,smoothedVar,kalmanState,scoreHistory,ragCache]);
+  // V1.8.0 fix: errorLog, corrections, lock888Achieved added — they were saved
+  // but absent from deps, so changes didn't persist unless another dep changed too.
+  },[coherenceData,bookmarks,eventLog,errorLog,corrections,
+     driftCount,turnCount,calmStreak,lock888Achieved,
+     smoothedVar,kalmanState,scoreHistory,ragCache]);
 
   const currentMode=HARNESS_MODES[harnessMode];
   // P4 fix: memoized — driftLawCapEff is cheap but called every render
@@ -5017,6 +5029,7 @@ export default function VECTOR() {
     const userMsg={role:"user",content,_display:displayText,_attachments:pending};
     const newMessages=[...messages,userMsg];
     setMessages(newMessages);
+    const prevTurnCount=turnCount;
     const turn=turnCount+1;
     setTurnCount(turn);
 
@@ -5036,17 +5049,20 @@ export default function VECTOR() {
       const hSignalCount=eventLog.filter(e=>e.type==="probable_hallucination_signal").length;
       const bSignalCount=eventLog.filter(e=>e.type==="behavioral_signal").length;
 
-      // PID correction: compute before pipe to potentially escalate mode
-      const pidPre = computePIDCorrection([...(scoreHistory.slice(-7)), rawScore]);
+      // PID correction: compute before pipe to potentially escalate mode.
+      // Uses scoreHistory only — current turn's rawScore is not yet computed here.
+      // (Previously appended an undefined `rawScore` causing a TDZ crash in sendMessage. V1.8.0.)
+      const pidPre = computePIDCorrection(scoreHistory.slice(-7));
       // If PID output > 2.0 and in audit mode, auto-escalate to moderate
       if (featPipe && pidPre.output > 2.0 && harnessMode === "audit" && turn >= 3) {
         setHarnessMode("moderate");
       }
       // StableDRL self-normalization: scale smoothedVar by rolling window sum
-      // so correction strength adapts to actual noise level, not fixed thresholds
+      // so correction strength adapts to actual noise level, not fixed thresholds.
+      // Window is scoreHistory only — current rawScore not yet computed. (V1.8.0 TDZ fix.)
       const sdrlVar = (stabledrlEnabled && scoreHistory.length >= 2)
         ? (()=>{
-            const win = [...scoreHistory.slice(-SDRL_NORM_WIN), rawScore];
+            const win = scoreHistory.slice(-SDRL_NORM_WIN);
             const clippedSum = win.reduce((s,v)=>s+Math.min(v, SDRL_JSD_CLIP), 0);
             const normFactor = Math.max(clippedSum / win.length, SDRL_NORM_FLOOR);
             return (smoothedVar??0) / normFactor;
@@ -5521,10 +5537,11 @@ export default function VECTOR() {
         const mhHealth=computeSessionHealth(newCData,
           finalDriftCount,newVar,newCalm,lock888Achieved,cfg);
         if (mhHealth!==null) {
-          // Variance spike on a CREATIVE session → switch to TECHNICAL
+          // Variance spike on a CREATIVE session → switch to TECHNICAL.
+          // V1.8.0 fix: do NOT overwrite customConfig here — that silently destroyed
+          // the user's stored custom preset values whenever an auto-switch fired.
           if (activePreset==="CREATIVE"&&newVar>(cfg.varDecoherence??VAR_DECOHERENCE)*0.8) {
             setActivePreset("TECHNICAL");
-            setCustomConfig({...PRESETS.TECHNICAL});
             setEventLog(p=>[...p,{timestamp:now,turn,
               type:"meta_harness",from:"CREATIVE",to:"TECHNICAL",
               reason:"variance spike exceeds 80% of decoherence threshold",
@@ -5533,7 +5550,6 @@ export default function VECTOR() {
           // RESEARCH session with low health → switch to TECHNICAL
           else if (activePreset==="RESEARCH"&&mhHealth<45) {
             setActivePreset("TECHNICAL");
-            setCustomConfig({...PRESETS.TECHNICAL});
             setEventLog(p=>[...p,{timestamp:now,turn,
               type:"meta_harness",from:"RESEARCH",to:"TECHNICAL",
               reason:"session health below 45 in RESEARCH mode",
@@ -5542,7 +5558,6 @@ export default function VECTOR() {
           // TECHNICAL session with sustained strong health → relax to DEFAULT
           else if (activePreset==="TECHNICAL"&&mhHealth>=80&&newCalm>=4) {
             setActivePreset("DEFAULT");
-            setCustomConfig({...PRESETS.DEFAULT});
             setEventLog(p=>[...p,{timestamp:now,turn,
               type:"meta_harness",from:"TECHNICAL",to:"DEFAULT",
               reason:"health>=80 and calm streak>=4 — session stable",
@@ -5583,6 +5598,14 @@ export default function VECTOR() {
 
       // ── Stage: snapshot_save ──────────────────────────────────
       try {
+        // V1.8.0 fix: snapshot lock888Achieved using the SAME two-condition test
+        // used by the live commit path (streak ≥ lock888Streak AND avgC ≥ lock888AvgCFloor).
+        // Previously the snapshot only checked the streak, so rewinding could place the
+        // session into a locked state that was never legitimately reached.
+        const snapAvgC=newHist.length?newHist.reduce((s,v)=>s+v,0)/newHist.length:0;
+        const snapLocked=newCalm>=(cfg.lock888Streak??LOCK_888_STREAK)
+          && snapAvgC>=(cfg.lock888AvgCFloor??0.72)
+          ? true : lock888Achieved;
         const snapshot={
           turn,
           messages:finalMessages,
@@ -5595,8 +5618,7 @@ export default function VECTOR() {
           scoreHistory:newHist,
           smoothedVar:newVar,
           calmStreak:newCalm,
-          // presets record the correct lock state. Was hardcoded to LOCK_888_STREAK=5.
-          lock888Achieved:newCalm>=(cfg.lock888Streak??LOCK_888_STREAK)?true:lock888Achieved,
+          lock888Achieved:snapLocked,
           ragCache:newRagCache,
         };
         setTurnSnapshots(prev=>[...prev,snapshot].slice(-20));
@@ -5614,6 +5636,9 @@ export default function VECTOR() {
 
     } catch(err) {
       // ── Stage: api_fetch (outermost catch) ────────────────────
+      // V1.8.0 fix: roll back turnCount so future turns don't get an off-by-one
+      // index against coherenceData (which did not receive an entry for this failed turn).
+      setTurnCount(prevTurnCount);
       const rawMsg=err.message||"Unknown error";
       const netMsg=rawMsg.toLowerCase().includes("fetch")||rawMsg.toLowerCase().includes("network")
         ?"Network error. Check your connection and try again"
@@ -5640,6 +5665,9 @@ export default function VECTOR() {
   // This was the single worst dep: it recreated the callback on every keystroke.
   // hasInput intentionally NOT in deps — sendMessage reads inputValueRef.current,
   // not hasInput. hasInput is UI-only (send button opacity/disabled). L2.
+  // V1.8.0: memoryLoading added — was read inside the callback as a guard against
+  // concurrent memory-compression API calls, but missing from deps caused the closure
+  // to see a stale value and allowed double-fire on back-to-back trigger turns.
   },[attachments,messages,isLoading,kalmanState,harnessMode,
      driftCount,turnCount,apiKey,ragCache,coherenceData,
      scoreHistory,smoothedVar,calmStreak,lock888Achieved,turnSnapshots,
@@ -5651,9 +5679,9 @@ export default function VECTOR() {
      // only used in UI rendering. Was causing unnecessary callback invalidation.
      mathTfidf,mathJsd,mathLen,mathStruct,mathPersist,mathRepThresh,
      mathKalmanR,mathKalmanSigP,mathRagTopK,mathMaxTokens,
-     sdeAlphaVal,setSdeAlphaVal,sdeBetaVal,setSdeBetaVal,sdeSigmaVal,setSdeSigmaVal,
-    sdeAlphaOn,setSdeAlphaOn,sdeBetaOn,setSdeBetaOn,sdeSigmaOn,setSdeSigmaOn,
-    mtjEnabled,setMtjEnabled,mtjDelta,setMtjDelta,levyEnabled,levyAlpha,
+     sdeAlphaVal,sdeBetaVal,sdeSigmaVal,
+     sdeAlphaOn,sdeBetaOn,sdeSigmaOn,
+     mtjEnabled,mtjDelta,levyEnabled,levyAlpha,
      postAuditThresh,
      livePaths,activeMutePhrases,
      pinnedDocs,sessionMemory,domainAnchor,
@@ -5661,7 +5689,8 @@ export default function VECTOR() {
      kalmanHistory,featIntegrityFloor,integrityThreshold,
      useEKF,useParticle,particleState,
      stabledrlEnabled,rlhfBridgeEnabled,lastInjectionTurn,
-     evolutionHistory,vectorFrontier,lastAutoTune]);
+     evolutionHistory,vectorFrontier,lastAutoTune,
+     memoryLoading]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
 
@@ -5863,7 +5892,7 @@ export default function VECTOR() {
     integrityThreshold,setIntegrityThreshold,integrityBreachCount,
       userRailsEnabled,userCustomRails,sdeModel,
       cirKappa,cirTheta,cirSigma,hestonKappa,hestonTheta,hestonSigma,hestonRho,hestonV0,
-      useEKF,useParticle,berryPhase,sheTorque,
+      berryPhase,sheTorque,
       evolutionHistory,vectorFrontier]);
 
   const sessionCtxValue = useMemo(()=>({
@@ -5965,8 +5994,12 @@ export default function VECTOR() {
           messages:[{role:"user",content:promptText}]})});
       const data=await resp.json();
       const reply=((data.content||[]).map(c=>c.text||"")).join("").trim();
-      // Q7 fix: score against user messages only — no corrected history leakage (ChatGPT audit)
-      const baseScore=computeCoherence(reply,messages.filter(m=>m.role==="user"));
+      // V1.8.0 fix: score baseline reply against the session message history.
+      // Previous V1.7.0 Q7 "fix" filtered to user-only messages, which guaranteed
+      // the coherence function returned the empty-history default of 0.88 every
+      // time — making the demo comparison meaningless. Both harnessed and baseline
+      // replies should score against identical context for a fair comparison.
+      const baseScore=computeCoherence(reply, messages);
       setDemoBaseline({prompt:promptText,response:reply,score:baseScore});
     } catch(e) {
       setDemoBaseline({prompt:promptText,response:"Error: "+e.message,score:null});
@@ -5996,7 +6029,7 @@ export default function VECTOR() {
         <div>
           <div style={S.title}>VECTOR — Volatility-Sensitive Correction Engine</div>
           <div style={S.subtitle}>
-            © HUDSON &amp; PERRY RESEARCH · MUTE:{featMute?"ON":"OFF"} · GATE:{featGate?"ON":"OFF"} · PIPE:{featPipe?"ON":"OFF"} · REWIND:ON
+            {VECTOR_VERSION} · © HUDSON &amp; PERRY RESEARCH · MUTE:{featMute?"ON":"OFF"} · GATE:{featGate?"ON":"OFF"} · PIPE:{featPipe?"ON":"OFF"} · REWIND:ON
           </div>
           <div style={{display:"flex",gap:10,marginTop:3}}>
             <a href="https://x.com/RaccoonStampede" target="_blank" rel="noreferrer"
@@ -7540,7 +7573,6 @@ export default function VECTOR() {
       {/* TUNE MODAL — Presets, Feature Toggles, Custom Config */}
       <TuneModal />
 
-      {/* REWIND CONFIRM MODAL */}
       {/* REWIND CONFIRM MODAL */}
       <RewindConfirmModal
         rewindConfirm={rewindConfirm}
