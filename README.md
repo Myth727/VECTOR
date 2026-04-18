@@ -6,7 +6,7 @@
 
 © 2026 Hudson & Perry Research  
 **Authors:** David Hudson ([@RaccoonStampede](https://x.com/RaccoonStampede)) · David Perry ([@Prosperous727](https://x.com/Prosperous727))  
-**Version:** V1.7.3 · **License:** MIT · [Live Demo](https://vector2026.vercel.app/)
+**Version:** V1.8.0 · **License:** MIT · [Live Demo](https://vector2026.vercel.app/)
 
 > ⚠ RESEARCH & DEVELOPMENT — NOT FOR CLINICAL OR LEGAL USE.  
 > All outputs are mathematical proxy indicators. No warranty expressed or implied.
@@ -27,7 +27,7 @@ Score output → Estimate state (Kalman) → Track volatility (GARCH) →
 Detect instability → Inject correction (u_drift) → Measure effect (ΔC) → Repeat
 ```
 
-**What this means in practice:** When a generative system starts drifting — getting sycophantic, inflating claims, losing context, contradicting itself — VECTOR catches it mathematically and injects corrective directives dynamically. Starting V1.7.2, it also measures whether those corrections actually improved coherence (causal delta), building the evidence base for future calibration.
+**What this means in practice:** When a generative system starts drifting — getting sycophantic, inflating claims, losing context, contradicting itself — VECTOR catches it mathematically and injects corrective directives dynamically. Since V1.8.0, it also measures whether those corrections actually improved coherence (causal delta with k=1..5 lag binning), building the evidence base for future calibration.
 
 ---
 
@@ -65,7 +65,7 @@ Works immediately. No account, no server, no install.
 
 No environment variables needed. Users provide their own API keys.
 
-**Vercel adds:** Semantic embeddings (all-MiniLM-L6-v2 ONNX ~23MB) · Unscented Kalman Filter (UKF) · Multi-provider (Anthropic, OpenAI, Grok) · Cross-session persistence
+**Vercel adds:** Semantic embeddings (all-MiniLM-L6-v2 ONNX ~23MB) · Multi-provider (Anthropic, OpenAI, Grok) · Cross-session persistence via proxy
 
 ---
 
@@ -164,8 +164,8 @@ dW_t = b · √dt · z · η
 |---|:---:|:---:|
 | TF-IDF + JSD scoring | ✓ | ✓ fallback |
 | Semantic embeddings (all-MiniLM-L6-v2) | — | ✓ |
-| Linear Kalman filter | ✓ | — |
-| Unscented Kalman Filter (UKF) | — | ✓ |
+| Unscented Kalman Filter (UKF) | ✓ | ✓ |
+| Linear Kalman (SDK only) | — (UKF used) | — (UKF used) |
 | GARCH(1,1) + jump-diffusion | ✓ | ✓ |
 | Monte Carlo SDE bands | ✓ | ✓ |
 | Langevin/MTJ noise model | ✓ | ✓ |
@@ -205,7 +205,7 @@ dW_t = b · √dt · z · η
 
 **Confirmed:** SDE math · Kalman filter · GARCH(1,1) · TF-IDF+JSD scoring · pipe injection · behavioral signal detection · per-preset GARCH tuning · epsilon parameterization · post-audit dual Kalman · Langevin/Neel-Brown math · EDM parallel discovery (Science Advances April 2026 independently confirmed same 45° angular gate VECTOR uses for drift detection)
 
-**Active (V1.7.2+):** Causal delta measurement — ΔC_policy vs ΔC_baseline logged per session across k=1..5 lags post-injection. Bin-stratified to eliminate selection bias. Building Phase B labeled dataset passively.
+**Active (V1.8.0):** Causal delta measurement — ΔC_policy vs ΔC_baseline logged per session across k=1..5 lags post-injection. Bin-stratified to eliminate selection bias. Building Phase B labeled dataset passively.
 
 **Requires validation:** C-score vs human judgment (target r > 0.6) · H-signal false positive rate (need 100 labeled examples, AUC > 0.80) · GARCH on semantic drift (heuristic, not proven) · 623.81 Hz physical anchor · Langevin/MTJ empirical co-validation · cross-domain applicability beyond LLM conversations
 

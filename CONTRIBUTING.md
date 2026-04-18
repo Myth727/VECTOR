@@ -48,6 +48,26 @@ Document H-signal and B-signal counts across matched sessions in normal vs priva
 
 ---
 
+## V1.8.0 — Consolidated Audit Pass (April 2026)
+
+This version rolls up the V1.7.1–V1.7.3 work with a full cross-file audit fix pass.
+See `CHANGELOG.md` for full per-version history. Highlights:
+
+- Causal delta measurement (A1) — ΔC tracked across k=1..5 lags with state-binned baselines
+- Critical bug fix: `sendMessage` rawScore TDZ crash (PID-pre-compute and StableDRL window both read rawScore before its `let` declaration — silently failed every turn in V1.7.x)
+- Critical bug fix: `sendDemoBaseline` always scored baseline as 0.88 (Q7 overcorrection)
+- Critical fix: `checkSelfContradiction` replaced with a heuristic that can actually fire
+  (prior logic was mathematically impossible to trigger)
+- SDK parity — `sdk/signals.ts` now exports 5 H-signals and 7 B-signals matching VECTOR.jsx
+- SDK cleanup — phantom `kalmanDualStep` export removed, duplicate `driftLawFloor` deleted
+- Python tools fixed — all 3 files now parse; `vector_harness.py` uses V1.7.0 exponential blend
+- Save effect deps — `errorLog`, `corrections`, `lock888Achieved`, `pooleGen` now persist correctly
+- Meta-harness auto-preset-switch no longer silently destroys user's CUSTOM config
+- Proxy default-model fallback now works for the Anthropic path
+- Canonical `VECTOR_VERSION` constant rendered in the running UI
+
+---
+
 ## V1.7.3 Causal Delta Improvements (logged April 17, 2026)
 
 ### R1 — Delay Bias Fix (k=1..5)
@@ -251,10 +271,21 @@ concerns — RLHF feedback should not be silenced when sigma adaptation
 is off. Creates a hidden dead zone. Fix: decouple RLHF update from
 sigma adaptation toggle entirely.
 
-**Q7 — Demo Baseline Contamination (INVALID EVALUATION)**
-sendDemoBaseline scores against full VECTOR-corrected session history.
-This is data leakage — the comparison is not independent. Fix: score
-baseline against user messages only, no corrected assistant turns.
+**Q7 — Demo Baseline Contamination (V1.8.0 REVISION)**
+The original spec (score baseline against full VECTOR-corrected session history)
+was correct to identify the contamination risk. The V1.7.0 implementation
+(`computeCoherence(reply, messages.filter(m => m.role === "user"))`) overcorrected
+— filtering to user-only messages left the coherence function with zero assistant
+history, so it returned the empty-history default of 0.88 every call, making the
+comparison meaningless.
+
+V1.8.0 resolution: score the baseline reply against the same `messages` array
+that the harnessed reply was scored against. The fair comparison is identical
+inputs, different policy — not different inputs, same policy. The "contamination"
+concern was a category error: the baseline's job is to answer the same prompt in
+the same conversational context, not in a synthetic context. Data leakage would
+only occur if the baseline reply itself were fed back into future harnessed
+scoring, which it isn't.
 
 ### CONFIRMED ISSUES — medium priority
 

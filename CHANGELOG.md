@@ -13,6 +13,123 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.8.0] — 2026-04-18
+
+### Consolidated Audit Pass
+
+Cross-file audit and cleanup across all 24 files. Rolls up the interim V1.7.1/V1.7.2/V1.7.3
+work (previously unlogged) with a systematic bug-fix pass. **Three critical runtime bugs
+in V1.7.x are fixed here.** Recommended upgrade for anyone on 1.7.x.
+
+### Critical Fixes
+
+- **`sendMessage` rawScore TDZ crash (runtime breakage on every turn)** — `computePIDCorrection([...scoreHistory.slice(-7), rawScore])` at the top of the sendMessage try-block read `rawScore` before its own `let` declaration, triggering `ReferenceError: Cannot access 'rawScore' before initialization`. The same TDZ violation occurred inside the StableDRL self-normalization IIFE. The outer catch swallowed the error and returned an error bubble every turn. Both reads now use `scoreHistory` only; current rawScore is not yet computed at that point in the callback.
+- **`sendDemoBaseline` always scored baseline as 0.88** — The V1.7.0 Q7 contamination fix overcorrected by filtering history to user-only messages. Since `computeCoherence` returns its empty-history default (0.88) when there are zero assistant turns in history, every demo baseline scored exactly 0.88 regardless of reply content. Baseline now scores against the same `messages` array as the harnessed reply, giving a fair same-context comparison. See CONTRIBUTING.md Q7 revision.
+- **`checkSelfContradiction` (Signal 3) mathematically impossible to trigger** — In both `sdk/signals.ts` and `VECTOR.jsx`, the function filtered prior turns by `tfidfSimilarity > threshold` then averaged those same similarities and checked `avgSim < lower_threshold`. Since a filtered set's average cannot fall below its filter threshold, Signal 3 had never fired. Replaced with a negation-density heuristic: fires when the current response has 2+ negation markers AND more than 2× the negation density of topically-related prior turns (TF-IDF > 0.30). Proxy only — claim-level semantic comparison via embeddings remains planned for V2.
+
+### SDK Fixes
+
+- **Phantom export removed** — `sdk/index.ts` was re-exporting `kalmanDualStep` from `./sde`, but no such function exists. Same bug class as the V1.5.37 Issue #3 fix (teknium1/NousResearch). Build guards with `ignoreBuildErrors: true` masked it; any SDK consumer calling it got `undefined is not a function`.
+- **Duplicate `driftLawFloor` removed** — Function was defined in both `sdk/drift.ts` (canonical) and `sdk/sde.ts` with slightly different signatures. Latent footgun for consumers doing named imports from `./sde`. `sde.ts` version deleted.
+- **H-signal parity** — SDK `assessHallucinationSignals` now returns 5 signals (was 3). Added: Signal 4 (low response entropy < 0.80) and Signal 5 (vocab novelty > 70% under elevated variance). Return type extended with `entropy` and `vocabGrowth` fields. Matches VECTOR.jsx.
+- **B-signal parity** — SDK `assessBehavioralSignals` now returns 7 signals (was 6). Added: `phrase_repetition` — bigram overlap > 40% with recent turns indicates looping. Matches VECTOR.jsx.
+- **Helpers added** — `computeResponseEntropy` and `computeVocabGrowthRate` exported from `sdk/signals.ts`.
+- **Dead null check removed** — `buildDriftGateInjection` in `sdk/engine.ts` checked `smoothedVar === null` on a parameter typed `number`. Unreachable.
+- **MI docstring corrected** — `computeMutualInformation` uses the geometric mean of marginals, not Shannon MI. Docstring now says so (function name preserved for API compatibility; V2 embeddings can provide proper MI).
+
+### VECTOR.jsx Bug Fixes
+
+- **`vector_data` save effect deps were missing 3 fields** — `errorLog`, `corrections`, and `lock888Achieved` were written into the save payload but absent from the useEffect deps array. Changes to these three fields did not trigger a save. Now properly wired.
+- **`pooleGen` config save mismatch** — Was in the deps array but not in the saved payload. Added to payload.
+- **Meta-harness auto-preset switch silently destroyed CUSTOM config** — The three auto-switch branches (CREATIVE→TECHNICAL, RESEARCH→TECHNICAL, TECHNICAL→DEFAULT) each called `setCustomConfig({...PRESETS.X})` as a side effect, overwriting the user's stored custom values whenever an auto-switch fired. `setCustomConfig` calls removed from all three branches; only `setActivePreset` remains.
+- **turnCount not rolled back on API error** — Outer catch in `sendMessage` left `turnCount` advanced while `coherenceData`, `scoreHistory`, and `kalmanState` stayed at the prior state. Subsequent turns indexed into metrics with an off-by-one mismatch against chat. `prevTurnCount` now captured before the try; error path calls `setTurnCount(prevTurnCount)`.
+- **Snapshot lock888 mismatch** — Snapshot captured `lock888Achieved` using streak-only test, but live commit requires both streak AND avgC ≥ lock888AvgCFloor. Rewinding to that snapshot could put the session into a lock state that was never legitimately reached. Snapshot now uses the same two-condition test as the live commit path.
+- **memoryLoading race on sendMessage** — `memoryLoading` was read inside sendMessage as a guard against concurrent memory-compression API calls, but missing from the useCallback deps array. Stale closure allowed double-fire on back-to-back memory-trigger turns while the first compression was still in flight. Now in deps.
+- **Duplicate JSX comment** at the RewindConfirmModal mount point — cleanup.
+- **Duplicate `useEKF, useParticle`** in tuneCtxValue deps array — cleanup. Also scrubbed remaining setter clutter from the config save effect deps.
+
+### VECTOR.jsx Features
+
+- **`VECTOR_VERSION` constant** — canonical single source of truth for the version string. Rendered in the header subtitle so users can see which build they're running. Updated every release alongside package.json, README, CHANGELOG, FRAMEWORK, and CONTRIBUTING.
+
+### Proxy / Infrastructure
+
+- **Anthropic-path default model fallback** — `pages/api/proxy.ts` was missing the `model: model || DEFAULT_MODELS[provider]` fallback on the Anthropic code path (OpenAI path had it). Dead for any caller that didn't send an explicit model. Fixed.
+
+### Python Tools
+
+- **`tools/meta_loop.py` SyntaxError** — bare `?` token inside an f-string (`h.get('iteration',?)`) on line 103. File never loadable. Should be `'?'` string literal. Fixed.
+- **`tools/frontier.py` SyntaxError** — identical bare `?` pattern on line 122. Fixed.
+- **`tools/meta_loop.py` `re` scoping bug** — `import re` was done inside function bodies (`run_evolution`, `main`) but `propose()` called `re.sub(...)` at module scope visibility. `NameError: name 're' is not defined` when proposer runs. Moved import to module level.
+- **`tools/vector_harness.py` exponential blend** — Python scorer was still on the pre-V1.7.0 linear turn_w ramp while the SDK and JSX had switched to α(t) = 1 − exp(−t/τ), τ=5. Scores differed between engines. Python now matches.
+
+### Documentation
+
+- **Retroactive CHANGELOG entries** for V1.7.1, V1.7.2, and V1.7.3 added (see below).
+- **Version alignment** — README, FRAMEWORK, CONTRIBUTING, package.json, and the new `VECTOR_VERSION` constant all report V1.8.0 / 1.8.0.
+- **SECURITY.md** storage-key table completed — 11 keys + 4 prefix patterns (was 8 keys, 6 missing).
+- **VECTOR_CODING_RULES.md** cleanup — stale "~6,800 lines" line count updated to ~7,600; stale `arch_*` storage key table replaced with current `vector_*` table; reference to nonexistent `GITHUB_SETUP.md` removed; eval path corrected from `.claude/evals/VECTOR_EVALS.md` to `evals/VECTOR_EVALS.md`; "vectorural invariants" rename artifact ("architect" → "vector" incorrectly caught "architectural") fixed.
+- **DOCUMENT_INTELLIGENCE.md** — second "vectorural" rename artifact fixed; two references to `tools/elo_score_prompt.py` (a file in the upstream dots.ocr repo, not this repo) corrected.
+- **HALLUCINATION_REFERENCE.md** — "added added later" typo fixed; Signal 3 documentation rewritten to describe the V1.8.0 negation-density heuristic with a note about the prior broken logic.
+- **DIALOGUE_BASELINES.md** — removed unreachable "< 0.30 floor | Maximum drift" row from the score interpretation table (computeCoherence clamps to [0.30, 0.99]; that row could never appear).
+- **UKF clarification (README)** — Feature comparison table corrected. VECTOR.jsx uses UKF via the sigma-point `kalmanStep` function for both artifact and Vercel deployments. The SDK ships a Linear Kalman `kalmanStep` for consumers; the three-way silent math divergence is now documented explicitly rather than falsely claimed as Vercel-only.
+- **VECTOR_EVALS.md** — EVAL-04 (`[A|t` → `[V|t` — renamed in V1.0.0), EVAL-06 (`arch_fb` → `vector_fb` — renamed in V1.0.0), EVAL-13 rewritten to test the new `VECTOR_VERSION` constant and verify it matches package.json, path claim corrected to `evals/VECTOR_EVALS.md`.
+- **CONTRIBUTING.md** — Q7 spec rewritten so anyone reimplementing the fix doesn't recreate the bug. The original "score against user messages only" guidance was the root cause of the V1.7.0 sendDemoBaseline regression.
+- **Tools README** — requirements path corrected (`requirements.txt` → `tools_requirements.txt`), phantom numpy dep removed.
+- **Tools requirements** — unused `python-dotenv` dependency removed.
+- **domain_spec.md** — reference to nonexistent `--convert` flag removed.
+
+---
+
+## [1.7.3] — 2026-04-17 (retroactive)
+
+### Causal Delta (A1) — R1/R2 Fixes
+
+Retroactively documented here. See `CONTRIBUTING.md` "V1.7.3 Causal Delta Improvements"
+for the full design rationale.
+
+- **R1 — Delay Bias Fix (k=1..5)** — Previous A1 logged `ΔC_policy` only at t+1. Injection effects may take 2-3 turns to manifest, so single-step measurement falsely classified delayed improvements as no-effect. Fix: `kOffset = turn - lastInjectionTurn`. Any turn where `kOffset ∈ [1,5]` is in the policy window. `deltaCPolicyK` records which lag k produced the delta.
+- **R2 — Selection Bias Fix (state binning)** — Previous A1 compared policy delta against a flat session rolling mean. Since policy only fires in drifted (low-coherence) states, the baseline was drawn from a different state distribution than the policy set — an unfair comparison. Fix: bin recent history into low (<0.50), mid (0.50–0.75), high (>0.75) coherence bins; baseline mean computed only from turns in the same bin as the current score. Falls back to flat rolling mean when bin is sparse (<2 turns).
+- **New `coherenceData` fields** — `deltaCPolicy`, `deltaCPolicyK`, `deltaCBaseline`.
+
+### Shadow Policy — Logged for Phase B
+
+External AI audit suggested adding a shadow policy branch:
+`C_shadow = predicted_next_C_without_policy()`. This requires a predictive model that
+does not yet exist. Logged as a Phase B target.
+
+---
+
+## [1.7.2] — 2026-04-16 (retroactive)
+
+### A1 Causal Delta — Initial Implementation
+
+Retroactively documented here. First working version of the causal delta measurement.
+At this point `deltaCPolicy` was computed only at k=1 (the bug that R1 addressed in
+V1.7.3) and used a flat rolling-mean baseline (the bug that R2 addressed in V1.7.3).
+
+- Per-turn logging of ΔC_policy (on injection turns) and ΔC_baseline (on non-injection turns).
+- `lastInjectionTurn` state added to track when policy last fired.
+- Passive Phase B data collection — every session generates labeled evidence about whether
+  the harness injections actually improved coherence.
+
+### Framing Update
+
+- README "What this means in practice" updated to mention causal delta measurement.
+- Validation Status section added "Active (V1.7.2+)" marker for the passive data collection.
+
+---
+
+## [1.7.1] — 2026-04-16 (retroactive)
+
+### Interim bug-fix slip
+
+Retroactively documented here. Interim release between V1.7.0 (StableDRL + Heston Full
+Truncation) and V1.7.2 (A1 Causal Delta). Minor consistency fixes and the stable
+foundation the V1.7.2 A1 work was built on.
+
+---
+
 ## [1.7.0] — 2026-04-16
 
 ### Mathematical Improvements

@@ -276,9 +276,10 @@ cap_eff = ε / (1 + γ_h)
 
 SDE math · Kalman filter · GARCH(1,1) · TF-IDF+JSD scoring · Pipe injection · Behavioral signal detection · Per-preset GARCH tuning · Epsilon parameterization · Post-audit dual Kalman · Langevin/Neel-Brown math · EDM 45° angular gate parallel (Science Advances April 2026)
 
-**V1.7.0 numerical scheme notes:**
+**V1.7.0 numerical scheme notes (carried through V1.8.0):**
 - **Heston variance (Full Truncation Euler):** positive part v⁺ = max(v, 0) used inside drift and diffusion terms before computing the update step, not clamped after. Eliminates systematic downward bias from simple absorption at zero.
 - **CIR Feller enforcement:** UI warns when 2κθ < σ² (Feller condition violated). Prevents invalid non-ergodic parameter configurations from running.
+- **Exponential coherence blending:** α(t) = 1 − exp(−t/τ), τ=5. Smooth continuous transition from prior-dominated to signal-dominated. Replaced the V1.0–V1.6 linear turn_w ramp.
 
 **Requires validation:**
 

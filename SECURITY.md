@@ -50,13 +50,25 @@ VECTOR persists the following keys to `localStorage` (Vercel) or `window.storage
 | Key | Contents |
 |-----|----------|
 | `vector_config` | Settings, feature toggles, math constants, κ mode choice, Advanced tab state |
-| `vector_data` | Coherence scores, event log, RAG cache, Kalman state, bookmarks |
+| `vector_data` | Coherence scores, event log, error log, corrections, RAG cache, Kalman state, bookmarks |
 | `vector_fb` | AutoTune feedback profiles — learned parameter adjustments per context type |
 | `vector_dp` | Display preferences — theme, font size, compact mode |
 | `vector_pinned` | Pinned document contents — user-uploaded files (stored locally only, never transmitted) |
 | `vector_mem` | Session memory summaries — compressed conversation history (stored locally only) |
 | `vector_api_key` | API key — stored locally if user saves it, transmitted only to chosen provider |
 | `vector_provider` | Provider selection (anthropic/openai/grok) |
+| `vector_frontier` | Meta-Harness frontier — best known config per context type |
+| `vector_evolution` | Meta-Harness evolution summary — JSONL of proposed/scored candidates |
+| `vector_notes_flush` | Research notes scratch buffer (uncontrolled textarea flush) |
+
+VECTOR also writes per-session archival keys using these prefixes:
+
+| Prefix | Purpose |
+|--------|---------|
+| `vector_chat_*` | Archived chat transcripts |
+| `vector_events_*` | Archived event logs |
+| `vector_session_*` | Archived session metrics |
+| `vector_evolution_*` | Archived per-session evolution entries |
 
 None of these keys contain personal data beyond what the user explicitly provides.
 Pinned document contents are stored locally in your browser only — never sent to any server.
