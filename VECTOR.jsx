@@ -151,6 +151,7 @@ const SDE_DELTA = 0.30;
 // increment, producing hardware-realistic stochastic uncertainty bands.
 // Cross-domain convergence: same math family as OU/SDE — not a coincidence.
 const MTJ_DELTA_DEFAULT = 25;
+const LEVY_ALPHA_DEFAULT = 1.7; // α-stable index: 1.0=Cauchy heavy-tail, 2.0=Gaussian. Default=1.7 moderate heavy-tail.
 
 const SDE_PARAMS = {
   alpha:-0.25, beta_p:0.18, omega:2*Math.PI/12, sigma:0.10, kappa:KAPPA,
@@ -1255,7 +1256,7 @@ Prune:${s.featPrune??true} | ZeroDrift:${s.featZeroDrift??true}
 nPaths:${s.nPaths??50} | PostAudit:${s.postAuditMode??'off'}
 
 2. CONSTANTS (user-set)
-κ:${(userKappa??KAPPA).toFixed(4)}${kappaNote} | DAMPING:${liveDamp.toFixed(4)} | ε:${EPSILON}
+κ:${parseFloat((userKappa??KAPPA).toFixed(3))}${kappaNote} | DAMPING:${liveDamp.toFixed(4)} | ε:${EPSILON}
 RESONANCE_ANCHOR:${anchor} Hz${anchorNote} | LOCK_888:${LOCK_888}
 AGAPE_STAB:${AGAPE_STAB} | SENSITIVITY:${SENSITIVITY} | HALO:${HALO_THRESHOLD.toFixed(6)}
 SDE: α=${SDE_PARAMS.alpha} | β_p=${SDE_PARAMS.beta_p} | ω=${SDE_PARAMS.omega.toFixed(4)}
@@ -1855,7 +1856,6 @@ function computeKolmogorovProxy(text) {
 // α=2.0: Gaussian limit. α=1.5: moderate heavy tail. α=1.0: Cauchy (very heavy).
 // Complements jump-diffusion (Poisson arrivals) with continuous heavy tails.
 // Reference: Chambers, Mallows & Stuck (1976). A Method for Simulating Stable R.V.s.
-const LEVY_ALPHA_DEFAULT = 1.7; // stability index — 1.0=Cauchy, 2.0=Gaussian
 function levyNoise(rng, alpha=LEVY_ALPHA_DEFAULT) {
   if (Math.abs(alpha-2.0)<0.01) { // Gaussian limit
     const u1=Math.max(rng(),1e-10),u2=rng();
@@ -4349,6 +4349,7 @@ export default function VECTOR() {
   const [kalmanHistory,   setKalmanHistory]   = useState([]); // V1.5.42: innovation whiteness check
   const [coherenceData,   setCoherenceData]   = useState([]);
   const [driftCount,      setDriftCount]      = useState(0);
+  const [lastInjectionTurn, setLastInjectionTurn] = useState(null); // A1: track turn where injection fired
   const [turnCount,       setTurnCount]       = useState(0);
   const [lastScore,       setLastScore]       = useState(null);
   const [showParams,      setShowParams]      = useState(false);
@@ -5434,6 +5435,41 @@ export default function VECTOR() {
           autocorrelation:innovAC,note:`Innovation sequence autocorrelation=${innovAC.toFixed(3)} — Kalman process model may be misspecified`}]);
       }
 
+      // ── A1 V1.7.3: Causal delta — R1 (k=1..5) + R2 (state binning) ──
+      // R1 fix: log ΔC for k=1..5 turns post-injection, not just k=1.
+      //   Effects may take 2-3 turns to manifest — single-step was biased.
+      // R2 fix: bin baseline by coherence level (low/mid/high) before delta.
+      //   Policy only fires in drifted states — flat baseline is unfair comparison.
+      //   Comparing within same coherence bin eliminates selection bias.
+
+      // R2: compute bin-stratified baseline
+      const BINS = [{lo:0,hi:0.50,name:'low'},{lo:0.50,hi:0.75,name:'mid'},{lo:0.75,hi:1.0,name:'high'}];
+      const scoreBin = BINS.find(b=>rawScore>=b.lo&&rawScore<b.hi)||BINS[1];
+      const binnedHistory = newHist.slice(-16).filter(v=>{
+        const b=BINS.find(b2=>v>=b2.lo&&v<b2.hi)||BINS[1];
+        return b.name===scoreBin.name;
+      });
+      const baselineMean = binnedHistory.length >= 2
+        ? binnedHistory.slice(0,-1).reduce((s,v)=>s+v,0) / (binnedHistory.length-1)
+        : (newHist.length>=2 ? newHist.slice(-8,-1).reduce((s,v)=>s+v,0)/Math.max(newHist.slice(-8,-1).length,1) : null);
+
+      // R1: compute kOffset — how many turns since last injection
+      const kOffset = lastInjectionTurn != null ? turn - lastInjectionTurn : null;
+      const isPolicyWindow = kOffset != null && kOffset >= 1 && kOffset <= 5;
+
+      const deltaCPolicy = (isPolicyWindow && baselineMean !== null)
+        ? parseFloat((rawScore - baselineMean).toFixed(4))
+        : null;
+      // Store kOffset so export shows WHICH lag produced this delta
+      const deltaCPolicyK = isPolicyWindow ? kOffset : null;
+
+      const deltaCBaseline = (!isPolicyWindow && baselineMean !== null && turn >= 3)
+        ? parseFloat((rawScore - baselineMean).toFixed(4))
+        : null;
+
+      // Track injection turn — set AFTER computing delta so current turn is not self-referential
+      if (drifted && pipeInj) setLastInjectionTurn(turn);
+
       const newCData=[...currentCData,{
         raw:rawScore,kalman:newKalman.x,harnessActive:drifted,mode:newMode,
         smoothedVar:newVar,hallucinationFlag:hallucinationAssessment.flagged,
@@ -5451,6 +5487,7 @@ export default function VECTOR() {
         berryPhase:berryResult, sheTorque:sheResult,
         entropy:hallucinationAssessment.entropy??null,
         vocabGrowth:hallucinationAssessment.vocabGrowth??null,
+        deltaCPolicy, deltaCPolicyK, deltaCBaseline,
       }];
       setCoherenceData(newCData.slice(-200)); // Q8: ring buffer cap in-memory
 
@@ -5623,14 +5660,14 @@ export default function VECTOR() {
      autoTuneEnabled,feedbackState,provider,
      kalmanHistory,featIntegrityFloor,integrityThreshold,
      useEKF,useParticle,particleState,
-     stabledrlEnabled,rlhfBridgeEnabled,
+     stabledrlEnabled,rlhfBridgeEnabled,lastInjectionTurn,
      evolutionHistory,vectorFrontier,lastAutoTune]);
 
   const handleKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}};
 
   const resetSession=()=>{
     setMessages([]);setCoherenceData([]);setKalmanState({x:0,P:.05});
-    setHarnessMode("audit");setDriftCount(0);setTurnCount(0);setLastScore(null);
+    setHarnessMode("audit");setDriftCount(0);setTurnCount(0);setLastScore(null);setLastInjectionTurn(null);
     setShowExport(false);setAttachments([]);setFileError("");setStatusMessage("");
     setRagCache([]);setRagHits(0);setEventLog([]);setErrorLog([]);
     setScoreHistory([]);setSmoothedVar(null);setCalmStreak(0);
@@ -7160,6 +7197,20 @@ export default function VECTOR() {
                 ["SHE Torque",
                   sheTorque!=null?sheTorque.toFixed(6):"—",
                   sheTorque!=null&&sheTorque>0?"#178040":"#C81030"],
+                // A1: Causal delta — did injection help?
+                ["ΔC Policy",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].deltaCPolicy!=null
+                    ?(coherenceData[coherenceData.length-1].deltaCPolicy>0?"+":"")+coherenceData[coherenceData.length-1].deltaCPolicy.toFixed(4)
+                      +" k="+(coherenceData[coherenceData.length-1].deltaCPolicyK??"-")
+                    :"—",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].deltaCPolicy!=null
+                    ?coherenceData[coherenceData.length-1].deltaCPolicy>0?"#178040":"#C81030"
+                    :"#2E5070"],
+                ["ΔC Baseline",
+                  coherenceData.length>0&&coherenceData[coherenceData.length-1].deltaCBaseline!=null
+                    ?(coherenceData[coherenceData.length-1].deltaCBaseline>0?"+":"")+coherenceData[coherenceData.length-1].deltaCBaseline.toFixed(4)
+                    :"—",
+                  "#4848B8"],
               ].map(([label,val,color])=>(
                 <div key={label} style={S.statRow}>
                   <span style={S.statLabel}>{label}</span>
