@@ -297,19 +297,26 @@ export function assessHallucinationSignals(
   return { flagged: signals.length > 0, signals, sourceScore, confidenceHits, contradiction, entropy, vocabGrowth };
 }
 
-// ── Bhattacharyya Similarity Proxy ────────────────────────────
+// ── Contextual Overlap (Bhattacharyya-style) ──────────────────
 /**
  * Context-dependence proxy via Bhattacharyya-style overlap.
  *
- * NOTE: Despite the historical function name (kept for API compatibility),
- * this is NOT Shannon mutual information — it uses the geometric mean of
- * marginals √(p_A · p_B) as a similarity measure, bounded [0, 1]. Low values
- * indicate the response is statistically disconnected from context.
- * For a proper MI implementation, V2 semantic embeddings would be required.
+ * Measures distributional similarity between the new response and prior
+ * context using √(p_A · p_B) — the geometric mean of marginals — as a
+ * similarity measure, bounded [0, 1]. Low values indicate the response
+ * is statistically disconnected from its context.
+ *
+ * This is NOT Shannon mutual information. Proper MI requires access to the
+ * joint distribution p(A, B), which TF-style tokenization cannot provide.
+ * Semantic embeddings (V2) would enable proper MI estimation via k-NN
+ * methods (e.g. Kraskov-Stögbauer-Grassberger 2004).
+ *
+ * Renamed from computeMutualInformation in V1.8.1 to reflect what it
+ * actually computes. The old name is kept as a deprecated alias.
  */
-export function computeMutualInformation(
-  newTokens: string[],
-  contextTokens: string[]
+export function computeContextualOverlap(
+  newTokens:     string[],
+  contextTokens: string[],
 ): number | null {
   if (!newTokens.length || !contextTokens.length) return null;
   const allTerms = new Set([...newTokens, ...contextTokens]);
@@ -331,6 +338,14 @@ export function computeMutualInformation(
   const maxMI = Math.max(0.001, Math.min(hA, hB));
   return Math.min(1, mi / maxMI);
 }
+
+/**
+ * @deprecated V1.8.1 — the function name was inaccurate. This computes
+ * Bhattacharyya-style distributional overlap, not Shannon mutual information.
+ * Use {@link computeContextualOverlap} instead. This alias will be removed
+ * in V2.0.
+ */
+export const computeMutualInformation = computeContextualOverlap;
 
 // ── Fisher Information ────────────────────────────────────────
 /**

@@ -194,3 +194,88 @@ export function computeCoherence(
 
   return Math.min(Math.max(blended, 0.30), 0.99);
 }
+
+// ── Semantic Coherence (V1.8.1, SDK port) ─────────────────────
+/**
+ * Cosine similarity between two embedding vectors of equal length.
+ * Returns 0 when either vector has zero norm. Bounded [-1, 1] mathematically,
+ * but for typical text embeddings (non-negative attention-normalized) sits
+ * in [0, 1]. Final result is clamped at 1.0 for numerical safety.
+ */
+export function cosineSimilarityVec(a: number[], b: number[]): number {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : Math.min(dot / denom, 1);
+}
+
+/**
+ * Semantic coherence score using pre-computed embeddings.
+ *
+ * This is the SDK-shape port of VECTOR.jsx's computeSemanticCoherence —
+ * structured so callers supply embeddings (from any model: transformers.js,
+ * OpenAI embeddings API, Cohere, Voyage, etc.) rather than depending on a
+ * specific browser Web Worker setup.
+ *
+ * The semantic score replaces the TF-IDF + JSD components (combined weight
+ * 0.50 by default); length, structure, persistence, and repetition penalty
+ * computation is identical to computeCoherence.
+ *
+ * If `recentEmbedding` is null, falls back to the TF-IDF computeCoherence path.
+ *
+ * For the live UI path that marshals a worker, see the closure in
+ * VECTOR.jsx → computeSemanticCoherence.
+ */
+export function computeSemanticCoherenceFromEmbeddings(
+  newContent:       string,
+  newEmbedding:     number[] | null,
+  recentEmbedding:  number[] | null,
+  history:          Message[],
+  weights:          CoherenceWeights = DEFAULT_WEIGHTS,
+  repThresh         = 0.65,
+): number {
+  const ah = history.filter(m => m.role === 'assistant');
+  if (!ah.length) return 0.88;
+  if (!newEmbedding || !recentEmbedding) {
+    return computeCoherence(newContent, history, weights, repThresh);
+  }
+
+  const semanticSim = cosineSimilarityVec(newEmbedding, recentEmbedding);
+  const recentText  = ah.slice(-4).map(m => getTextFromContent(m.content)).join(' ');
+  const newT        = tokenize(newContent);
+  const recT        = tokenize(recentText);
+
+  const avgLen   = ah.reduce((s, m) => s + getTextFromContent(m.content).length, 0) / ah.length;
+  const lenScore = Math.exp(-Math.abs(newContent.length - avgLen) / Math.max(avgLen, 1) * 2);
+
+  const sents    = (n: string) => n.split(/[.!?]+/).filter(s => s.trim().length > 8).length;
+  const newSC    = sents(newContent);
+  const avgSC    = ah.reduce((s, m) => s + sents(getTextFromContent(m.content)), 0) / ah.length;
+  const struct   = Math.exp(-Math.abs(newSC - avgSC) / Math.max(avgSC, 1) * 1.5);
+
+  const tf: Record<string, number> = {};
+  recT.forEach(w => { tf[w] = (tf[w] || 0) + 1; });
+  const top     = Object.entries(tf).sort((a, b) => b[1] - a[1]).slice(0, 15).map(e => e[0]);
+  const persist = top.length === 0 ? 1 : top.filter(t => newT.includes(t)).length / top.length;
+
+  const lastReply = getTextFromContent(ah[ah.length - 1]?.content || '');
+  const lastT     = tokenize(lastReply);
+  const overlap   = lastT.length > 0 ? lastT.filter(w => newT.includes(w)).length / lastT.length : 0;
+  const rt        = repThresh;
+  const repPenalty = overlap > rt ? rt : 1.0;
+
+  const w = weights;
+  const score = (
+    semanticSim * (w.tfidf + w.jsd) +
+    lenScore    * w.length +
+    struct      * w.structure +
+    persist     * w.persistence
+  ) * repPenalty;
+
+  return Math.min(Math.max(score, 0.30), 0.99);
+}

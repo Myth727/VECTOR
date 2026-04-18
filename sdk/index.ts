@@ -55,6 +55,8 @@ export {
   tfidfSimilarity,
   jensenShannonDivergence,
   computeCoherence,
+  cosineSimilarityVec,
+  computeSemanticCoherenceFromEmbeddings,
   DEFAULT_WEIGHTS,
 } from './coherence';
 export type { CoherenceWeights, Message, ContentBlock } from './coherence';
@@ -79,11 +81,14 @@ export {
   detectConfidenceLanguage,
   checkSourceConsistency,
   checkSelfContradiction,
-  computeMutualInformation,    // MI between turns — low = drift risk
+  computeResponseEntropy,      // V1.8.0 — Shannon entropy of response tokens
+  computeVocabGrowthRate,      // V1.8.0 — fraction of novel tokens vs session prior
+  computeContextualOverlap,    // V1.8.1 — correctly-named Bhattacharyya overlap
+  computeMutualInformation,    // @deprecated V1.8.1 — alias for computeContextualOverlap
   computeFisherInformation,    // rate of distribution change per turn
   computeKolmogorovProxy,      // LZ complexity ratio
-  computeBerryPhase,           // geometric phase of session trajectory
-  computeSHETorque,            // spin Hall effect torque proxy
+  computeBerryPhase,           // geometric phase proxy on session trajectory
+  computeSHETorque,            // variance-coupled stabilization proxy
   computeEWMATrend,            // exponentially weighted moving average
 } from './signals';
 export type {
@@ -92,6 +97,30 @@ export type {
   HallucinationAssessment,
   EWMAResult,
 } from './signals';
+
+// ── Per-turn metrics (V1.8.1 parity module) ─────────────────────
+export {
+  computeAnchorDistance,             // slow-burn drift vs session anchor (first 3 turns)
+  computeInnovationAutocorrelation,  // Kalman model-fit check (Box & Jenkins 1970)
+  computeEfficiencyRatio,            // information density per token
+} from './metrics';
+
+// ── AutoTune (V1.8.1 parity module) ─────────────────────────────
+export {
+  AT_PROFILES,
+  detectMsgContext,
+  computeAutoTuneParams,
+  createFeedbackState,
+  processFeedback,
+} from './autotune';
+export type {
+  ContextType,
+  SamplingParams,
+  ContextResult,
+  LearnedProfile,
+  FeedbackState,
+  AutoTuneResult,
+} from './autotune';
 
 // ── Engine: pipe injection, RAG, health, pruning ─────────────────
 export {
