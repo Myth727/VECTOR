@@ -12,7 +12,7 @@ import {
 // ── Version ────────────────────────────────────────────────────
 // Canonical version string. Must match package.json, README.md,
 // CHANGELOG.md (top entry), and FRAMEWORK.md / CONTRIBUTING.md references.
-const VECTOR_VERSION = "V1.8.0";
+const VECTOR_VERSION = "V1.8.1";
 
 // ── Deployment ─────────────────────────────────────────────────
 // Environment detection: use /api/proxy on Vercel, direct API everywhere else

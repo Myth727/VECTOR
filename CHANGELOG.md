@@ -13,6 +13,55 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.8.1] — 2026-04-18
+
+### SDK Parity Patch
+
+Rolls up findings from a post-V1.8.0 SDK audit. The primary V1.8.0 work addressed
+critical runtime bugs, cross-file consistency, and H-signal/B-signal count parity
+between VECTOR.jsx and the SDK. This follow-up closes the remaining API surface
+gaps so headless SDK consumers have the same per-turn metric functions that
+VECTOR.jsx ships.
+
+### New SDK modules
+
+- **`sdk/metrics.ts`** — per-turn metric functions previously only in VECTOR.jsx:
+  - `computeAnchorDistance` — TF-IDF similarity vs first 3 assistant turns (slow-burn drift)
+  - `computeInnovationAutocorrelation` — Kalman filter whiteness check (Box & Jenkins 1970)
+  - `computeEfficiencyRatio` — response information density per token
+  - Re-exports `computeResponseEntropy` and `computeVocabGrowthRate` for discoverability.
+- **`sdk/autotune.ts`** — AutoTune sampling-parameter adaptation previously only in VECTOR.jsx:
+  - `detectMsgContext` — 5-way context classifier (code · creative · analytical · conversational · chaotic)
+  - `computeAutoTuneParams` — temperature/top_p/frequency_penalty selector with confidence-weighted fallback
+  - `createFeedbackState`, `processFeedback` — EMA-based feedback learning over user thumbs up/down
+
+### New exports from existing SDK files
+
+- **`sdk/coherence.ts`**:
+  - `cosineSimilarityVec` — vector cosine similarity (was inlined in VECTOR.jsx only)
+  - `computeSemanticCoherenceFromEmbeddings` — SDK-shape port of the semantic scoring path. Accepts pre-computed embeddings as input, making the semantic layer usable in Node.js pipelines, offline scoring, and environments without the browser Web Worker stack. The live UI path in VECTOR.jsx still marshals the worker.
+- **`sdk/signals.ts`**:
+  - `computeResponseEntropy` and `computeVocabGrowthRate` — these were added to `signals.ts` in V1.8.0 but never re-exported from `sdk/index.ts`, meaning SDK consumers got `undefined` when importing them. Fixed.
+  - `computeContextualOverlap` — V1.8.1 rename of `computeMutualInformation`. The prior name was mathematically inaccurate (the function computes Bhattacharyya-style distributional overlap, not Shannon mutual information). The old name is preserved as a `@deprecated` alias pointing to the new name; will be removed in V2.0. No behavioral change — same numbers, correct label.
+
+### Docs
+
+- **`ROADMAP.md`** — new top-level document cataloging what is deliberately *not* in VECTOR today. Organized by domain (variance modeling, control theory, information theory, statistics, signal processing, anomaly detection, ML). Each entry includes the missing capability, the field it comes from, the citation, and a version target. Functions as a credibility artifact: a tool that can name what it lacks is more trustworthy than one that implies it has everything.
+
+### What did NOT change
+
+- Zero behavioral change in VECTOR.jsx. This is a parity patch — the main artifact already had everything; the SDK was catching up. Users will notice no difference in the running app. The changelog entry exists because the version number moves and library consumers need to know their imports now resolve.
+- The Python tools are unchanged. Their scoring path was already aligned in V1.8.0.
+
+### Verification
+
+- All 10 SDK files pass `tsc --noEmit` with zero errors (modern bundler module resolution).
+- Both VECTOR.jsx files parse clean via Babel (byte-identical, 7,601 lines).
+- All 3 Python tools compile via `py_compile`.
+- Canonical version agrees across `VECTOR_VERSION` constant (V1.8.1), `package.json` (1.8.1), `README.md` (V1.8.1), and top CHANGELOG entry.
+
+---
+
 ## [1.8.0] — 2026-04-18
 
 ### Consolidated Audit Pass
