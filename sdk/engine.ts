@@ -124,7 +124,7 @@ export function buildDriftGateInjection(
   const decohere   = cfg?.varDecoherence    ?? VAR_DECOHERENCE;
   const wordLimit  = cfg?.driftGateWordLimit ?? DRIFT_GATE_WORD_LIMIT;
 
-  if (smoothedVar === null || smoothedVar <= caution) return '';
+  if (smoothedVar <= caution) return '';
 
   const severity = smoothedVar > decohere ? 'CRITICAL' : 'ELEVATED';
   return `\n\n[DRIFT_GATE — Variance ${severity}: σ²=${smoothedVar.toFixed(4)}]\n`

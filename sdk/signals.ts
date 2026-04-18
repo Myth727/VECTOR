@@ -1,16 +1,21 @@
 /**
  * VECTOR SDK — SIGNAL DETECTION
  *
- * Hallucination signals (3 proxies):
+ * Hallucination signals (5 proxies):
  *   1. High-confidence language + elevated variance
  *   2. Low source consistency (<8% TF-IDF match)
- *   3. Self-contradiction with prior turns
+ *   3. Self-contradiction via negation-density heuristic (V1.7.4 — was
+ *      mathematically impossible to trigger before; now a proxy only,
+ *      superseded by semantic embeddings in V2)
+ *   4. Low response entropy (< 0.80) — repetitive filler
+ *   5. High vocabulary novelty (> 70% new terms) under elevated variance
  *
- * Behavioral signals (6 proxies):
+ * Behavioral signals (7 proxies):
  *   Research: Sharma et al. ICLR 2024 (Anthropic) — sycophancy as systematic RLHF behavior.
- *   1. Roleplay drift        4. Question flooding
- *   2. Sycophancy            5. Topic hijack
- *   3. Hype inflation        6. Unsolicited elaboration
+ *   1. Roleplay drift        5. Topic hijack
+ *   2. Sycophancy            6. Unsolicited elaboration
+ *   3. Hype inflation        7. Phrase repetition (bigram overlap > 40%)
+ *   4. Question flooding
  *
  * All outputs are proxy indicators — not confirmed detections.
  *
@@ -87,6 +92,8 @@ export interface HallucinationAssessment {
   sourceScore:    number | null;
   confidenceHits: number;
   contradiction:  boolean;
+  entropy:        number | null;
+  vocabGrowth:    number | null;
 }
 
 // ── Behavioral signals ──────────────────────────────────────────
@@ -130,6 +137,28 @@ export function assessBehavioralSignals(
     signals.push({ type: 'unsolicited_elaboration',
       detail: `Response is ${wordCount} words (avg ${Math.round(avgLen)})` });
 
+  // Phrase repetition — bigram overlap with recent turns.
+  // > 40% bigram overlap with the last 3 assistant turns indicates looping.
+  if (ah.length >= 2 && responseText.length > 40) {
+    const bigrams = (text: string): Set<string> => {
+      const toks = tokenize(text);
+      const bg = new Set<string>();
+      for (let i = 0; i < toks.length - 1; i++) bg.add(toks[i] + ' ' + toks[i + 1]);
+      return bg;
+    };
+    const respBG   = bigrams(responseText);
+    const priorBG  = new Set<string>();
+    ah.slice(-3).forEach(m => bigrams(getTextFromContent(m.content)).forEach(b => priorBG.add(b)));
+    if (respBG.size > 0 && priorBG.size > 0) {
+      let hits = 0;
+      respBG.forEach(b => { if (priorBG.has(b)) hits++; });
+      const overlap = hits / respBG.size;
+      if (overlap > 0.40)
+        signals.push({ type: 'phrase_repetition',
+          detail: `${Math.round(overlap * 100)}% bigram overlap with recent turns — possible looping` });
+    }
+  }
+
   return {
     flagged:       signals.length > 0,
     signals,
@@ -137,6 +166,44 @@ export function assessBehavioralSignals(
     roleplays:     roleplays.length,
     sycophancies:  sycophancies.length,
   };
+}
+
+// ── Response Entropy ────────────────────────────────────────────
+/**
+ * Shannon entropy over token frequency distribution in the response.
+ * Low entropy (< 0.8) indicates repetitive filler or restatement content.
+ * Very high entropy (> 3.5) with high vocab novelty may indicate confabulation.
+ */
+export function computeResponseEntropy(tokens: string[]): number {
+  if (!tokens.length) return 0;
+  const freq: Record<string, number> = {};
+  tokens.forEach(t => { freq[t] = (freq[t] || 0) + 1; });
+  const total = tokens.length;
+  let h = 0;
+  Object.values(freq).forEach(c => {
+    const p = c / total;
+    if (p > 0) h -= p * Math.log2(p);
+  });
+  return h;
+}
+
+// ── Vocabulary Growth Rate ──────────────────────────────────────
+/**
+ * Fraction of tokens in the current response not seen in any prior assistant turn.
+ * High vocabGrowth (> 0.70) under elevated variance is a confabulation proxy.
+ */
+export function computeVocabGrowthRate(
+  tokens: string[],
+  history: Message[],
+): number {
+  if (!tokens.length) return 0;
+  const prior = new Set<string>();
+  history.filter(m => m.role === 'assistant').forEach(m =>
+    tokenize(getTextFromContent(m.content)).forEach(t => prior.add(t)));
+  if (!prior.size) return 1;
+  let novel = 0;
+  tokens.forEach(t => { if (!prior.has(t)) novel++; });
+  return novel / tokens.length;
 }
 
 // ── Hallucination signals ───────────────────────────────────────
@@ -164,15 +231,23 @@ export function checkSelfContradiction(
   if (ah.length < 2) return false;
 
   const respT   = tokenize(responseText);
+  // Find topically-related prior turns via TF-IDF overlap
   const related = ah.slice(-6).filter(m => {
     const sim = tfidfSimilarity(respT, tokenize(getTextFromContent(m.content)));
-    return sim > 0.35;
+    return sim > 0.30;
   });
   if (!related.length) return false;
 
-  const avgSim = related.reduce((s, m) =>
-    s + tfidfSimilarity(respT, tokenize(getTextFromContent(m.content))), 0) / related.length;
-  return avgSim < 0.15;
+  // Negation-density heuristic: a response that negates/reverses on established
+  // topic ground typically shows a sharp rise in negation markers compared to
+  // the prior related turns. Not a semantic contradiction detector — proxy only.
+  // TODO(V2): replace with embedding-based claim-level similarity comparison.
+  const NEG = /\b(not|no|don'?t|isn'?t|aren'?t|wasn'?t|weren'?t|wouldn'?t|couldn'?t|shouldn'?t|never|incorrect|wrong|actually|instead|contrary)\b/gi;
+  const respNeg  = (responseText.match(NEG) || []).length;
+  const priorAvg = related.reduce((s, m) =>
+    s + ((getTextFromContent(m.content).match(NEG) || []).length), 0) / related.length;
+
+  return respNeg >= 2 && respNeg > priorAvg * 2.0;
 }
 
 /**
@@ -200,6 +275,10 @@ export function assessHallucinationSignals(
   // V1.5.11: read preset varCaution — MEDICAL (0.090) fires earlier than DEFAULT (0.120)
   const vCau = cfg?.varCaution ?? VAR_CAUTION;
 
+  const respTokens  = tokenize(responseText);
+  const entropy     = respTokens.length ? computeResponseEntropy(respTokens) : null;
+  const vocabGrowth = respTokens.length ? computeVocabGrowthRate(respTokens, history) : null;
+
   const signals: string[] = [];
   if (confidenceHits >= 2 && smoothedVar > vCau)
     signals.push(`high-confidence language (${confidenceHits} markers) with elevated variance`);
@@ -207,15 +286,26 @@ export function assessHallucinationSignals(
     signals.push(`low source consistency (${(sourceScore * 100).toFixed(1)}% match)`);
   if (contradiction)
     signals.push('possible self-contradiction with prior turn on same topic');
+  // Signal 4: low response entropy — repetitive filler
+  if (entropy !== null && entropy > 0 && entropy < 0.8 && respTokens.length > 10)
+    signals.push(`low response entropy (${entropy.toFixed(2)}) — repetitive or low-information reply`);
+  // Signal 5: high vocab novelty under elevated variance — confabulation proxy
+  if (vocabGrowth !== null && vocabGrowth > 0.70 && smoothedVar > vCau
+      && history.filter(m => m.role === 'assistant').length >= 3)
+    signals.push(`high vocabulary novelty (${Math.round(vocabGrowth * 100)}% new terms) under elevated variance — possible confabulation`);
 
-  return { flagged: signals.length > 0, signals, sourceScore, confidenceHits, contradiction };
+  return { flagged: signals.length > 0, signals, sourceScore, confidenceHits, contradiction, entropy, vocabGrowth };
 }
 
-// ── Mutual Information ────────────────────────────────────────
+// ── Bhattacharyya Similarity Proxy ────────────────────────────
 /**
- * Statistical dependence between current response and context.
- * Low MI (< 0.3) = response statistically independent of conversation.
- * Stronger than JSD for detecting contextual drift.
+ * Context-dependence proxy via Bhattacharyya-style overlap.
+ *
+ * NOTE: Despite the historical function name (kept for API compatibility),
+ * this is NOT Shannon mutual information — it uses the geometric mean of
+ * marginals √(p_A · p_B) as a similarity measure, bounded [0, 1]. Low values
+ * indicate the response is statistically disconnected from context.
+ * For a proper MI implementation, V2 semantic embeddings would be required.
  */
 export function computeMutualInformation(
   newTokens: string[],

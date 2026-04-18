@@ -164,23 +164,6 @@ export function kalmanStep(
   };
 }
 
-/**
- * Compute drift law floor — minimum coherence at turn n under harness mode.
- * ΔS = cap_eff × (1 − exp(−n^α_s / τ)) + |β_c · sin(γ_h · n · 0.01)| × 0.05
- */
-export function driftLawFloor(
-  n: number,
-  gamma_h: number,
-  epsilon = 0.05,
-  alphaS = 1.8,
-  betaC = 0.2
-): number {
-  const capEff = epsilon / (1 + gamma_h);
-  const tau = Math.max(0.0225 / epsilon, 1);
-  const sys = capEff * (1 - Math.exp(-Math.pow(Math.max(n, 0.001), alphaS) / tau));
-  return sys + Math.abs(betaC * Math.sin(gamma_h * n * 0.01)) * 0.05;
-}
-
 // ── CIR (Cox-Ingersoll-Ross) ───────────────────────────────────
 /**
  * dX = κ(θ−X)dt + σ√X dW  — keeps variance non-negative.

@@ -41,7 +41,6 @@ export {
   sdePercentilesAtStep,
   normalizePaths,
   kalmanStep,
-  kalmanDualStep,
   ekfStep,
   levyNoise,
   computeLyapunovBound,
