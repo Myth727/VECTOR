@@ -13,6 +13,90 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [1.9.0] — 2026-04-19
+
+### Causal measurement + statistical test layer + reliability formulas
+
+The V1.8.0 causal delta work collected data but could not defensibly test it — no trajectory counterfactual, no significance tests, no multiple-comparison correction. V1.9.0 closes that gap end-to-end and adds a tier of classical reliability math alongside.
+
+Three new SDK modules. No existing behavior removed. Every prior field preserved for backward compatibility with exports.
+
+### New SDK modules
+
+- **`sdk/causal.ts`** — trajectory-based counterfactual measurement.
+  - `propagateForwardDeltas(priors, currentScore)` — retroactively populates `forwardDeltas[k]` (k ∈ 1..5) on prior entries as future turns arrive. Pure, O(MAX_LAG) per turn.
+  - `recovered` flag — set to the lag at which coherence crossed back above 0.60 for at-risk origins (those with C < 0.50). Binary, interpretable, sample-size-sensible.
+  - `computeShadowStats(entries)` — aggregates policy-vs-clean-baseline forward deltas by (lag × coherence bin). Uses a disjointness rule: a non-policy turn only counts as a clean baseline origin if no policy injection fires in the next `MAX_LAG` turns. Prevents baseline windows from overlapping policy windows.
+  - `summarizeShadowStats(stats)` — pooled sample-size-weighted means plus `canCompare` gate (requires ≥5 origins per arm).
+  - `extractRawBuckets`, `extractPooledDeltas` — expose per-cell and pooled raw delta arrays for the statistical layer to consume. ShadowStats only stores aggregated moments by design; raw values are kept on the fly.
+  - **Why it matters:** The V1.8.0 baseline was `C_t − bin-stratified historical mean` — a LEVEL delta against typical scores at that coherence level. This is a weak counterfactual because it does not match the trajectory dynamics we are actually trying to measure. ChatGPT's review in April 2026 identified this as the missing counterfactual control. V1.9.0's baseline is the forward-delta distribution on matched non-policy turns with disjoint lag windows — a TRAJECTORY counterfactual.
+
+- **`sdk/stats.ts`** — formal significance testing on the causal delta data.
+  - `mannWhitneyU(xs, ys)` — two-sided rank-sum test with tie correction, continuity correction, and normal-approximation p-value. Valid for min(n₁, n₂) ≥ 8; below that the approximation is conservative.
+  - `fisherExact(a, b, c, d)` — exact p-value for 2×2 contingency tables. Enumerates all tables with matching marginals. Used for recovery-rate comparison (recovered vs not-recovered, policy vs baseline).
+  - `bootstrapMeanDiffCI(xs, ys, opts)` — percentile bootstrap CI on `mean(ys) − mean(xs)`. Seeded Mulberry32 PRNG for reproducibility.
+  - `benjaminiHochberg(pvals, alpha)` — FDR correction when testing multiple (lag, bin) cells simultaneously.
+  - `compareArms(shadow)` — pooled report consuming ShadowStats; Fisher recovery test plus diagnostic notes on sample adequacy.
+  - `runCellTests(rawPolicy, rawBaseline, alpha)` — per-cell Mann-Whitney across all (lag × bin) pairs, then BH across the resulting p-value family.
+  - **Why it matters:** Prior to V1.9.0 the claim "deltaCPolicy > deltaCBaseline" had no defensible test. Reviewers would ask for Mann-Whitney or a t-test, confidence intervals, and a multiple-comparisons correction. Those are now present in the SDK and surfaced live in the UI.
+
+- **`sdk/reliability.ts`** — classical reliability math.
+  - **Normal tier** (proven, displayed in the main sidebar):
+    - `probFailureN(p, n)` — Murphy's "infinity formula": P(failure after n trials) = 1 − (1−p)ⁿ. Assumes per-trial independence; in real sessions with positively autocorrelated drift this is an upper bound, which is the correct default for a monitoring tool.
+    - `totalProbability(pAgivenB, pB)` — Law of Total Probability. In VECTOR, fuses per-bin failure rates with bin occupancy weights to produce a bin-weighted drift probability.
+    - `nForTargetFailure(p, q)` — minimum n such that P(failure) ≥ q. Answers "given current drift rate, how many more turns until drift is q-probable?"
+    - `componentFailureAny(ps)` — series-system failure across independent components: 1 − Πᵢ(1 − pᵢ).
+    - `estimatePerTurnRate(k, n)` — Laplace-smoothed rate: (k+1)/(n+2). Safer than k/n for small n.
+  - **Advanced / exploratory tier** (consent-gated in the Advanced tab, same pattern as MHT Study and Poole CA):
+    - `sodsLawScore(input)` — Wiseman 2004 pop-science formula. Six 1–9 inputs, returns a score clipped to [0, 10] with a band label. Not a calibrated reliability model; surfaced as a playful diagnostic with an explicit disclaimer in the panel.
+    - `entropyDriftNarrative(s, prior)` — ΔS_universe > 0 (Second Law of Thermodynamics) as a metaphor for coherence decay. Explicitly display-only.
+  - **Why it matters:** Murphy's Law formulations are the cleanest mathematical expression of why VECTOR exists — as n grows, cumulative failure probability approaches 1 for any p > 0. Making that explicit in the readout instead of implicit in the architecture is worth doing.
+
+### VECTOR.jsx / components/VECTOR.jsx
+
+- Inline mirrors of all three SDK modules, matching the established pattern (VECTOR.jsx is single-file standalone and does not import from SDK).
+- `useMemo` hooks:
+  - `shadowSummary` — recomputes `summarizeShadowStats(computeShadowStats(coherenceData))` when coherenceData changes.
+  - `statsReport` — gated on `shadowSummary.canCompare`; runs Fisher's exact on pooled recovery counts plus bootstrap CI on pooled forward deltas.
+  - `reliabilityReport` — Laplace-smoothed drift rate and cumulative probability projections (10 turns, 25 turns, n-to-50%-probable), plus bin-weighted failure estimate via Total Probability.
+  - `sodsReport` — Sod's Law calculation from the six Advanced-tab sliders.
+- New sidebar rows (normal tier, no consent gate):
+  - **Shadow baseline:** `ΔC̄ Policy (session)`, `ΔC̄ Baseline (shadow)`, `P(recover) Policy`, `P(recover) Baseline`
+  - **Statistical evidence:** `Recovery p (Fisher)`, `ΔC̄ 95% CI`
+  - **Reliability:** `Drift Rate (Laplace)`, `P(drift) in 10 turns`, `n to P≥50% drift`, `P(drift) bin-weighted`
+- New Advanced tab panel: `Sod's Law Calculator (Wiseman 2004)` — six sliders, live score readout with band, disclaimer.
+- Added `showSodsLaw` and six `sods*` state variables; all persisted in session save/restore.
+- Existing `deltaCPolicy`, `deltaCPolicyK`, `deltaCBaseline` fields preserved (no data loss in exports).
+
+### ROADMAP items removed
+
+Three required-V1.9 items from `ROADMAP.md` completed and removed:
+- Welch's t-test / Mann-Whitney U (V1.9 required) → Mann-Whitney implemented
+- Bootstrap Confidence Intervals (V1.9 required) → percentile bootstrap implemented
+- Multiple Hypothesis Correction (V1.9 required) → Benjamini-Hochberg implemented
+
+Granger causality remains on the roadmap — V1.9.0 uses Fisher/MW/bootstrap, not Granger. Fisher's exact, percentile bootstrap, and BH are new additions to the document's completed-items sentence in the top-10 priority list.
+
+### Verification
+
+- All three new SDK modules pass `tsc --noEmit --strict` clean.
+- `VECTOR.jsx` + `components/VECTOR.jsx` parse clean via Babel (8,175 lines, +575 over V1.8.1).
+- 63 runtime test assertions pass across causal (4), stats (32), and reliability (27) — including Fisher's tea-tasting p≈0.486, Mann-Whitney separated samples p<0.05, BH adjusted p-values matching hand-computed reference (0.005 / 0.025 / 0.05 / 0.05 / 0.5), bootstrap CIs covering true meanDiff on separated and identical inputs, Murphy's `probFailureN(0.1, 10).pSurvival ≈ 0.3487`, `nForTargetFailure(0.01, 0.99) = 459`, Sod's Law mid-range and extreme cases both producing sensible clipped scores.
+- Version string agrees across `VECTOR_VERSION` (V1.9.0), `package.json` (1.9.0), `README.md` (V1.9.0), and top CHANGELOG entry.
+
+### Known limitations carried forward to V2.0
+
+- **Ground truth still internal.** "Failure" means C < threshold, which is VECTOR judging itself. This was acknowledged as the biggest unresolved blocker in V1.8.x and it still is. Ground truth strategy has been decided for V2.0: three combined sources — task-grounded sessions (verifiable tasks like math / code / factual Q&A), human-labeled subset (most rigorous), and a new UI button ("something's off / not grounded") distinct from thumbs up/down. Storage expansion is required first and is flagged as future work.
+- **Turn deletion (rewind) path** does not rebuild `forwardDeltas` on surrounding turns. Stale ΔCₖ values on neighbors persist until naturally overwritten. Acceptable for the validation experiment since that workflow is not used during session capture.
+- **Ring buffer cap (200).** If a policy window's origin scrolls out of the 200-entry buffer before its lag-5 future turn arrives, the forwardDelta at k=5 is lost. Non-issue for any session under ~200 turns.
+- **Per-cell Mann-Whitney + BH lives in SDK only**, not live UI. Kept headless for offline analysis via `tools/` scripts. The live sidebar shows pooled Fisher + bootstrap, which scale safely inside a render path.
+
+### Strategic note
+
+V1.9.0 is the "potential energy → kinetic energy via one measured result" release. The validation experiment (N=50–100 sessions, C<0.5, policy ON/OFF) now has every ingredient it needs except the ground truth pipeline. That pipeline, and the experiment itself, land in V2.0 once storage + semantic embeddings are in.
+
+---
+
 ## [1.8.1] — 2026-04-18
 
 ### SDK Parity Patch

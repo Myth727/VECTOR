@@ -237,32 +237,12 @@ VECTOR uses Kalman filtering for state estimation but no frequency-domain analys
 
 The V1.8.0 causal delta measurement accumulates data but lacks the hypothesis-testing infrastructure to analyze it validly. This is the single biggest gap for publishing VECTOR's actual results.
 
-### Welch's t-test / Mann-Whitney U
-**Field:** Classical statistics
-**What it does:** Tests whether two samples come from distributions with different means (t-test) or different medians (Mann-Whitney, non-parametric).
-**Why VECTOR would benefit:** To formally test the V1.8.0 claim "deltaCPolicy > deltaCBaseline," one of these is required. Without it, VECTOR collects data but cannot produce a defensible test.
-**Reference:** Welch, B. L. (1947). *The generalization of "Student's" problem when several different population variances are involved.* Biometrika 34; Mann, H. B. and Whitney, D. R. (1947). *On a Test of Whether One of Two Random Variables is Stochastically Larger than the Other.* Annals of Mathematical Statistics 18.
-**Target:** V1.9 (required)
-
-### Bootstrap Confidence Intervals
-**Field:** Computational statistics
-**What it does:** Non-parametric confidence intervals via resampling. Works on any statistic.
-**Why VECTOR would benefit:** For bin-stratified causal delta estimates where sample sizes are small and distributions non-normal, bootstrap is the only honest CI method.
-**Reference:** Efron, B. (1979). *Bootstrap Methods: Another Look at the Jackknife.* Annals of Statistics 7(1).
-**Target:** V1.9 (required)
-
 ### Sequential Hypothesis Testing (SPRT / mSPRT)
 **Field:** Sequential analysis
 **What it does:** Adaptive testing — stop collecting data as soon as enough evidence has accumulated, rather than at a fixed sample size. Maintains false-positive rate.
 **Why VECTOR would benefit:** Causal delta data accumulates online across sessions. SPRT is the mathematically correct way to run a test on streaming data.
 **Reference:** Wald, A. (1945). *Sequential Tests of Statistical Hypotheses.* Annals of Mathematical Statistics 16(2); Johari, Pekelis, Walsh (2015). *Always Valid Inference.* arXiv:1512.04922.
 **Target:** V2.0
-
-### Multiple Hypothesis Correction
-**Field:** Classical statistics
-**What it does:** Adjusts p-values when testing many hypotheses simultaneously (bins × lags × session types).
-**Reference:** Benjamini, Y. and Hochberg, Y. (1995). *Controlling the False Discovery Rate: A Practical and Powerful Approach to Multiple Testing.* JRSS B 57(1).
-**Target:** V1.9 (required, paired with t-test)
 
 ### Causal Inference — Beyond Granger
 **Field:** Causal inference
@@ -346,7 +326,7 @@ Each is its own project. None would be VECTOR as currently shipped; each would u
 
 Ranked by impact-per-effort:
 
-1. **Granger causality + Welch t-test + bootstrap CIs + BH correction** (V1.9, statistics layer) — the V1.8.0 causal delta data is uninterpretable without these. This is the single most valuable addition.
+1. **Granger causality** (V2.x, statistics layer) — V1.9.0 implemented Mann-Whitney U, Fisher's exact, percentile bootstrap CI, and Benjamini-Hochberg correction, which cover the two-sample significance and multiple-comparison needs for the causal delta data. Granger causality specifically is still absent; it is the standard test reviewers expect for temporal causal claims (whether policy injection predicts subsequent coherence beyond the session's own autoregressive trend).
 2. **EGARCH or GJR-GARCH** (V1.9, variance asymmetry) — addresses the biggest math gap with the smallest engineering cost.
 3. **CUSUM change-point detector** (V1.9, where did drift start?) — formal answer to a question users already ask.
 4. **Transfer entropy** (V2.0, user vs AI contribution to drift) — unbundles a coupled measurement.
