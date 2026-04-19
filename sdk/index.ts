@@ -122,6 +122,86 @@ export type {
   AutoTuneResult,
 } from './autotune';
 
+// ── Causal delta & shadow baseline ──────────────────────────────
+// Trajectory-based counterfactual measurement for policy effectiveness.
+// Replaces the level-delta baseline with matched forward-delta windows.
+// P(recovery) = P(C_{t+k} > 0.60 for some k ≤ 3 | C_t < 0.50).
+// Pre-requisite for any causal claim about VECTOR policy effectiveness.
+export {
+  propagateForwardDeltas,  // per-turn retroactive forward-delta update
+  computeShadowStats,      // policy-vs-baseline forward-delta aggregates by lag & bin
+  summarizeShadowStats,    // flatten to single-line summary for display
+  extractRawBuckets,       // per-(lag, bin) raw forward-delta arrays (consumed by stats)
+  extractPooledDeltas,     // pooled forward deltas for overall bootstrap
+  coherenceBin,            // low (<0.50) / mid (<0.75) / high
+  BIN_EDGE_LOW,
+  BIN_EDGE_MID,
+  DRIFT_THRESHOLD,
+  RECOVERY_THRESHOLD,
+  RECOVERY_WINDOW,
+  MAX_LAG,
+  MIN_COMPARE,
+} from './causal';
+export type {
+  CoherenceBin,
+  ForwardDeltaMap,
+  ShadowEntry,
+  ArmStats,
+  ShadowStats,
+  ShadowSummary,
+} from './causal';
+
+// ── Statistical test layer ──────────────────────────────────────
+// Mann-Whitney U (rank-sum, tie-corrected), Fisher's exact (2×2),
+// percentile bootstrap CI on mean difference, Benjamini-Hochberg FDR.
+// Consumes extractRawBuckets / extractPooledDeltas output from causal.
+// Use compareArms for pooled recovery test, runCellTests for per-cell MW+BH.
+export {
+  mannWhitneyU,
+  fisherExact,
+  bootstrapMeanDiffCI,
+  benjaminiHochberg,
+  compareArms,
+  runCellTests,
+  erf,
+  normalTwoSidedP,
+  mulberry32,
+} from './stats';
+export type {
+  MWResult,
+  FisherResult,
+  BootstrapResult,
+  BHResult,
+  CellTestResult,
+  ArmComparisonReport,
+} from './stats';
+
+// ── Reliability & failure probability ───────────────────────────
+// Classical reliability math (Feller 1968) — Murphy's Law, Law of
+// Total Probability, n-for-target-failure, series failure, Laplace-
+// smoothed rate estimate. Advanced-tier satirical Sod's Law (Wiseman
+// 2004) and entropy narrative wrapper — both display-only, not
+// calibrated physics. See module header for full rationale.
+export {
+  probFailureN,
+  totalProbability,
+  nForTargetFailure,
+  componentFailureAny,
+  estimatePerTurnRate,
+  sodsLawScore,
+  entropyDriftNarrative,
+  SODS_LAW_MIN,
+  SODS_LAW_MAX,
+  SODS_LAW_CAP,
+} from './reliability';
+export type {
+  FailureProbResult,
+  NForTargetResult,
+  SodsLawInput,
+  SodsLawResult,
+  EntropyNarrativeResult,
+} from './reliability';
+
 // ── Engine: pipe injection, RAG, health, pruning ─────────────────
 export {
   buildPipeInjection,       // cfg → preset var thresholds (V1.5.9)
