@@ -416,3 +416,244 @@ export function runCellTests(
 
   return { cells: out, bh };
 }
+
+// ── Granger causality ────────────────────────────────────────────
+//
+// Tests whether past values of X help predict Y beyond Y's own
+// autoregressive trend. For VECTOR: does policy firing at past turns
+// help predict subsequent coherence beyond coherence's own AR(p) drift?
+//
+// Classic F-test on nested regressions:
+//   Restricted:   Y_t = α + Σ β_i Y_{t-i} + ε
+//   Unrestricted: Y_t = α + Σ β_i Y_{t-i} + Σ γ_j X_{t-j} + ε'
+//
+// F = ((RSS_r − RSS_u) / q) / (RSS_u / (n − k))
+//   q = number of X lags (restrictions)
+//   n = sample size
+//   k = total parameters in unrestricted model (intercept + p + q)
+//
+// Under H0: γ_j = 0 for all j → F ~ F(q, n−k).
+// P-value from F CDF via regularized incomplete beta function.
+//
+// Reference: Granger, C. W. J. (1969). Investigating Causal Relations
+// by Econometric Models and Cross-spectral Methods. Econometrica 37(3).
+
+export interface GrangerResult {
+  F:            number;      // test statistic
+  df1:          number;      // numerator df (q = number of X lags)
+  df2:          number;      // denominator df (n − k)
+  pValue:       number | null;
+  rssRestricted:   number;
+  rssUnrestricted: number;
+  nObservations:   number;
+  pLagsY:       number;      // Y autoregressive order
+  pLagsX:       number;      // X lag order tested
+  method:       'F-test' | 'degenerate';
+}
+
+// Solve the normal equations X'Xβ = X'y via Gaussian elimination.
+// Returns β vector. Lightweight — OK for p ≤ ~10 which is all we need.
+function solveNormalEquations(X: number[][], y: number[]): number[] | null {
+  const n = X.length;
+  const k = X[0].length;
+  // Build augmented matrix [X'X | X'y]
+  const XtX: number[][] = Array.from({ length: k }, () => new Array(k).fill(0));
+  const Xty: number[] = new Array(k).fill(0);
+  for (let i = 0; i < n; i++) {
+    for (let a = 0; a < k; a++) {
+      for (let b = 0; b < k; b++) XtX[a][b] += X[i][a] * X[i][b];
+      Xty[a] += X[i][a] * y[i];
+    }
+  }
+  // Augmented
+  const M: number[][] = XtX.map((row, i) => [...row, Xty[i]]);
+  // Gaussian elimination with partial pivoting
+  for (let i = 0; i < k; i++) {
+    let pivot = i;
+    for (let j = i + 1; j < k; j++) {
+      if (Math.abs(M[j][i]) > Math.abs(M[pivot][i])) pivot = j;
+    }
+    if (Math.abs(M[pivot][i]) < 1e-12) return null;  // singular
+    if (pivot !== i) { const tmp = M[i]; M[i] = M[pivot]; M[pivot] = tmp; }
+    for (let j = i + 1; j < k; j++) {
+      const f = M[j][i] / M[i][i];
+      for (let c = i; c <= k; c++) M[j][c] -= f * M[i][c];
+    }
+  }
+  // Back-substitute
+  const beta = new Array(k).fill(0);
+  for (let i = k - 1; i >= 0; i--) {
+    let s = M[i][k];
+    for (let j = i + 1; j < k; j++) s -= M[i][j] * beta[j];
+    beta[i] = s / M[i][i];
+  }
+  return beta;
+}
+
+// Residual sum of squares after fitting X β = y via OLS.
+function fitAndGetRSS(X: number[][], y: number[]): number | null {
+  const beta = solveNormalEquations(X, y);
+  if (!beta) return null;
+  let rss = 0;
+  for (let i = 0; i < X.length; i++) {
+    let pred = 0;
+    for (let j = 0; j < X[i].length; j++) pred += X[i][j] * beta[j];
+    const e = y[i] - pred;
+    rss += e * e;
+  }
+  return rss;
+}
+
+// Regularized incomplete beta function I_x(a, b).
+// Continued-fraction expansion (Numerical Recipes §6.4, Lentz 1976).
+function lnGamma(z: number): number {
+  // Lanczos approximation, g=7, n=9. Valid z > 0.
+  const g = 7;
+  const c = [
+    0.99999999999980993,
+    676.5203681218851,
+    -1259.1392167224028,
+    771.32342877765313,
+    -176.61502916214059,
+    12.507343278686905,
+    -0.13857109526572012,
+    9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  if (z < 0.5) {
+    // Reflection: lnΓ(z) = ln(π / sin(πz)) − lnΓ(1−z)
+    return Math.log(Math.PI / Math.sin(Math.PI * z)) - lnGamma(1 - z);
+  }
+  z -= 1;
+  let a = c[0];
+  const t = z + g + 0.5;
+  for (let i = 1; i < c.length; i++) a += c[i] / (z + i);
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
+}
+
+function betacf(a: number, b: number, x: number): number {
+  const MAXIT = 200, EPS = 3e-7, FPMIN = 1e-30;
+  const qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= MAXIT; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d;
+    if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c;
+    if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d;
+    h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d;
+    if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c;
+    if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < EPS) return h;
+  }
+  return h;  // did not converge in MAXIT; return last estimate
+}
+
+export function regularizedIncompleteBeta(a: number, b: number, x: number): number {
+  if (x < 0 || x > 1) return NaN;
+  if (x === 0 || x === 1) return x;
+  const bt = Math.exp(
+    lnGamma(a + b) - lnGamma(a) - lnGamma(b)
+    + a * Math.log(x) + b * Math.log(1 - x)
+  );
+  if (x < (a + 1) / (a + b + 2)) {
+    return bt * betacf(a, b, x) / a;
+  } else {
+    return 1 - bt * betacf(b, a, 1 - x) / b;
+  }
+}
+
+// P-value from F CDF: P(F_{d1,d2} ≥ x) under H0
+export function fPValue(x: number, d1: number, d2: number): number {
+  if (x <= 0) return 1;
+  if (!isFinite(x)) return 0;
+  // Using: P(F ≥ x) = I_{d2/(d2+d1*x)}(d2/2, d1/2)
+  const t = d2 / (d2 + d1 * x);
+  return regularizedIncompleteBeta(d2 / 2, d1 / 2, t);
+}
+
+/**
+ * Granger-causality test: does X Granger-cause Y?
+ *
+ * Parameters:
+ *   y, x — same-length time series
+ *   pY   — autoregressive order on Y (how many Y lags)
+ *   pX   — X lag order tested (how many X lags)
+ *
+ * Null hypothesis: all X coefficients are zero (X does not improve prediction
+ * of Y beyond Y's own autoregression).
+ *
+ * Returns the F statistic, p-value, and degrees of freedom. Small sample
+ * warning: requires n > (pY + pX + 1) + 10 for meaningful inference.
+ */
+export function grangerCausality(
+  y:  number[],
+  x:  number[],
+  pY: number = 2,
+  pX: number = 2
+): GrangerResult {
+  if (y.length !== x.length) {
+    return {
+      F: 0, df1: 0, df2: 0, pValue: null,
+      rssRestricted: 0, rssUnrestricted: 0,
+      nObservations: 0, pLagsY: pY, pLagsX: pX, method: 'degenerate',
+    };
+  }
+  const maxLag = Math.max(pY, pX);
+  const n = y.length - maxLag;
+  const kU = 1 + pY + pX;  // unrestricted: intercept + Y lags + X lags
+  const kR = 1 + pY;       // restricted:   intercept + Y lags
+  if (n < kU + 5) {
+    return {
+      F: 0, df1: pX, df2: Math.max(0, n - kU), pValue: null,
+      rssRestricted: 0, rssUnrestricted: 0,
+      nObservations: n, pLagsY: pY, pLagsX: pX, method: 'degenerate',
+    };
+  }
+  // Build design matrices
+  const yTgt: number[] = new Array(n);
+  const Xr:   number[][] = Array.from({ length: n }, () => new Array(kR).fill(0));
+  const Xu:   number[][] = Array.from({ length: n }, () => new Array(kU).fill(0));
+  for (let i = 0; i < n; i++) {
+    const t = i + maxLag;
+    yTgt[i] = y[t];
+    Xr[i][0] = 1;
+    Xu[i][0] = 1;
+    for (let j = 1; j <= pY; j++) {
+      Xr[i][j] = y[t - j];
+      Xu[i][j] = y[t - j];
+    }
+    for (let j = 1; j <= pX; j++) {
+      Xu[i][pY + j] = x[t - j];
+    }
+  }
+  const rssR = fitAndGetRSS(Xr, yTgt);
+  const rssU = fitAndGetRSS(Xu, yTgt);
+  if (rssR === null || rssU === null || rssU <= 0) {
+    return {
+      F: 0, df1: pX, df2: n - kU, pValue: null,
+      rssRestricted: rssR ?? 0, rssUnrestricted: rssU ?? 0,
+      nObservations: n, pLagsY: pY, pLagsX: pX, method: 'degenerate',
+    };
+  }
+  const df1 = pX;
+  const df2 = n - kU;
+  const F = ((rssR - rssU) / df1) / (rssU / df2);
+  const pValue = fPValue(F, df1, df2);
+  return {
+    F, df1, df2, pValue,
+    rssRestricted: rssR, rssUnrestricted: rssU,
+    nObservations: n, pLagsY: pY, pLagsX: pX, method: 'F-test',
+  };
+}

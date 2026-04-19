@@ -153,9 +153,11 @@ export type {
 
 // ── Statistical test layer ──────────────────────────────────────
 // Mann-Whitney U (rank-sum, tie-corrected), Fisher's exact (2×2),
-// percentile bootstrap CI on mean difference, Benjamini-Hochberg FDR.
+// percentile bootstrap CI on mean difference, Benjamini-Hochberg FDR,
+// Granger causality F-test with incomplete-beta p-values.
 // Consumes extractRawBuckets / extractPooledDeltas output from causal.
-// Use compareArms for pooled recovery test, runCellTests for per-cell MW+BH.
+// Use compareArms for pooled recovery test, runCellTests for per-cell MW+BH,
+// grangerCausality for temporal predictive-causality claims.
 export {
   mannWhitneyU,
   fisherExact,
@@ -163,6 +165,9 @@ export {
   benjaminiHochberg,
   compareArms,
   runCellTests,
+  grangerCausality,
+  regularizedIncompleteBeta,
+  fPValue,
   erf,
   normalTwoSidedP,
   mulberry32,
@@ -174,7 +179,39 @@ export type {
   BHResult,
   CellTestResult,
   ArmComparisonReport,
+  GrangerResult,
 } from './stats';
+
+// ── Ground-truth storage & signal validation ───────────────────
+// Three-source ground truth for VECTOR's coherence signals:
+//   1. Task-grounded sessions (verifiable tasks)
+//   2. Human labels (post-hoc rater tags)
+//   3. "Something's off" flags (user-initiated per-turn, distinct from thumbs)
+// Namespaced storage under vector:gt:*. Signal validation joins the three
+// sources against coherence trajectory to produce precision/recall/F1.
+export {
+  GT_KEY_PREFIX,
+  GT_TASK_PREFIX,
+  GT_LABEL_PREFIX,
+  GT_FLAG_PREFIX,
+  storeTaskEntry,
+  storeHumanLabel,
+  storeNotGroundedFlag,
+  retrieveTaskEntries,
+  retrieveHumanLabels,
+  retrieveNotGroundedFlags,
+  exportGroundTruth,
+  validateSignals,
+} from './groundtruth';
+export type {
+  TaskType,
+  HumanLabelValue,
+  TaskGroundedEntry,
+  HumanLabel,
+  NotGroundedFlag,
+  GroundTruthExport,
+  SignalValidationReport,
+} from './groundtruth';
 
 // ── Reliability & failure probability ───────────────────────────
 // Classical reliability math (Feller 1968) — Murphy's Law, Law of
