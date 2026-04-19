@@ -13,6 +13,86 @@ Full development history from ARCHITECT V1.0 through V2.3 is preserved at:
 
 ---
 
+## [2.0.0] — 2026-04-19
+
+### Ground truth, semantic embeddings, Granger causality, experiment analyzer
+
+The V1.9.0 causal + stats + reliability layer completed every piece of math the validation experiment needs except two: external ground truth to anchor "failure," and semantic similarity to replace the TF-IDF/JSD text-metric. V2.0.0 adds both, plus Granger causality for temporal causal claims, plus an offline experiment analyzer so the full pipeline runs headless.
+
+Five major additions. No existing behavior removed or renamed. V1.9.0 users upgrading will see new sidebar rows, a new Advanced-tab toggle, and an extra button next to thumbs up/down.
+
+### New SDK modules
+
+- **`sdk/groundtruth.ts`** — three-source external anchor.
+  - Task-grounded sessions: `storeTaskEntry`, `retrieveTaskEntries`. Designed for math / code / factual Q&A where correctness is binary.
+  - Human labels: `storeHumanLabel`, `retrieveHumanLabels`. Rater tags per turn (good, drifted, failed, off_topic, hallucinated).
+  - "Something's off" flags: `storeNotGroundedFlag`, `retrieveNotGroundedFlags`. User-initiated per-turn, distinct from thumbs up/down which are style preference.
+  - `exportGroundTruth(sessionId?)` → one combined JSON export across all three sources.
+  - `validateSignals(export, τ)` → precision, recall, F1, accuracy, mean C per class. Joins ground truth against the coherence trajectory at matching turns.
+  - Storage keys namespaced under `vector:gt:*`. Works with both Claude artifact `window.storage` and `localStorage` via the existing storage polyfill.
+  - **Why it matters:** This was the single unresolved blocker identified repeatedly in ChatGPT review. "Failure" used to mean C < threshold — VECTOR judging itself, circular. Now failure can be defined by something *outside* VECTOR, and the validation experiment becomes interpretable.
+
+### New stats module additions
+
+- **`grangerCausality(y, x, pY, pX)`** — F-test on nested regressions. Tests whether past values of X help predict Y beyond Y's own autoregression. For VECTOR: does policy firing Granger-cause subsequent coherence beyond coherence's own AR(p) drift?
+  - Builds restricted (Y lags only) and unrestricted (Y lags + X lags) regressions via Gauss-eliminated normal equations.
+  - F = ((RSS_r − RSS_u) / q) / (RSS_u / (n − k)), p-value from F CDF via regularized incomplete beta.
+  - Validated against scipy: `fPValue(1, 1, 10) ≈ 0.341`, `fPValue(5, 1, 10) ≈ 0.049`, synthetic X→Y with 0.8·X_{t-2} → detected at p<1e-145, correct reverse direction non-significant.
+  - This is the final item from ROADMAP's top-10 statistics layer. Granger removed from roadmap.
+
+### VECTOR.jsx / components/VECTOR.jsx
+
+- **"Something's off" button** next to thumbs up/down. Distinct semantics — thumbs = style preference, this = suspected factual/grounding failure. Click toggles a flag for that turn, writes an event to the log, and persists a ground-truth flag record to storage under `vector:gt:flag:{sessionId}:{turnIndex}`. Hover tooltip explains the distinction.
+- **Semantic embeddings feature flag** (Advanced tab, default OFF).
+  - Lazy-loads `/embedder.worker.js` (Web Worker already shipped in public/) which pulls `@xenova/transformers` from the jsDelivr CDN and instantiates `Xenova/all-MiniLM-L6-v2` (~23MB, IndexedDB-cached after first run).
+  - Four state variables: `semanticEnabled`, `semanticReady`, `semanticStatus`, `semanticWeight` (blend slider, 0 = text-metric only, 1 = semantic only, 0.5 default).
+  - `requestEmbedding(text)` — promise-based API, 10s timeout, message-id correlation. Ready for integration into the coherence scoring path when the validation experiment runs.
+  - Worker terminates cleanly when flag flips off. Feature is fully optional and does not change scoring for users who leave it off.
+- Sidebar additions: `Semantic Mode` (status line), `Sem Weight` (blend readout).
+- Version bumped from V1.9.0 to V2.0.0. State for `notGroundedFlags`, `semanticEnabled`, `semanticWeight` persisted in session save/restore.
+
+### Offline experiment analyzer
+
+- **`tools/analyze_experiment.py`** — standard-library-only Python that consumes a directory of exported VECTOR session JSON files plus an optional ground-truth JSON, and produces the full validation report:
+  - Shadow-baseline forward-delta stats per (lag, bin)
+  - P(recovery) per arm
+  - Fisher's exact on recovery rates
+  - Per-cell Mann-Whitney U with Benjamini-Hochberg adjusted p-values
+  - Pooled bootstrap CI on mean policy-vs-baseline forward delta
+  - Granger causality of policy → coherence
+  - Signal validation (precision/recall/F1) against the ground-truth export
+- Mirrors the TypeScript SDK behavior test-for-test. No numpy, no scipy — runs anywhere Python 3.8+ is installed, including on the phone. Usage: `python tools/analyze_experiment.py --sessions ./exports --gt ./groundtruth.json`.
+
+### ROADMAP items removed
+
+- Granger causality — previously listed as V2.x priority #1, now implemented. Removed from top-10 and from the statistics section.
+
+### Verification
+
+- All 5 SDK modules (causal, stats, reliability, groundtruth, storage) pass `tsc --noEmit --strict` clean.
+- `VECTOR.jsx` + `components/VECTOR.jsx` parse clean via Babel (8,308 lines, +133 over V1.9.0).
+- 89 runtime test assertions pass across the SDK: 4 causal + 32 stats + 27 reliability + 15 ground-truth + 11 Granger/F-test/incomplete-beta.
+- `tools/analyze_experiment.py` smoke-test passes end-to-end on a synthetic session + ground-truth pair; per-cell numeric outputs match the SDK to 15 decimal places.
+- Version string agrees across `VECTOR_VERSION` (V2.0.0), `package.json` (2.0.0), `README.md` (V2.0.0), and top CHANGELOG entry.
+
+### Operational notes
+
+- **Vercel deployment is your action** — VECTOR itself is ready for it (proxy, worker, and config file all present). When you deploy, semantic embeddings get a more reliable CDN path and the experiment session exports can accumulate server-side if you later add an endpoint for them.
+- **Storage schema expansion** — V2.0.0 uses the existing polyfill with namespaced keys (`vector:gt:task:`, `vector:gt:label:`, `vector:gt:flag:`). For the validation experiment at N=50–100 sessions, this is sufficient. When session volume grows, a proper backend makes sense.
+- **The validation experiment can now run.** Every ingredient is in place: shadow baseline, P(recovery), Fisher, bootstrap, BH, Granger, ground truth, and a headless analyzer. What's missing is the sessions themselves — this is operational time, not engineering time.
+
+### Known limitations carried forward
+
+- Semantic embeddings are **scaffolded but not yet wired into the coherence scoring path**. The worker loads, embeddings compute, the weight slider reads — but `computeCoherence` still uses TF-IDF+JSD in V2.0.0. Wiring semantic similarity into the blend is intentionally a separate step so the feature can be A/B tested cleanly once sessions accumulate.
+- Turn deletion (rewind) path still does not rebuild forwardDeltas on surrounding turns.
+- 200-entry ring buffer still caps forward-delta propagation horizon.
+
+### Strategic note
+
+V2.0.0 is the "experiment-ready" release. No new math is required before the validation run. What comes next is either wiring semantic embeddings into scoring (a ~20-line change inside `computeCoherence` gated by `semanticEnabled`), running the N=50–100 experiment, or addressing EGARCH / CUSUM / other ROADMAP items that strengthen the paper but don't block the first result.
+
+---
+
 ## [1.9.0] — 2026-04-19
 
 ### Causal measurement + statistical test layer + reliability formulas

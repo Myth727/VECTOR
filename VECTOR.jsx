@@ -12,7 +12,7 @@ import {
 // ── Version ────────────────────────────────────────────────────
 // Canonical version string. Must match package.json, README.md,
 // CHANGELOG.md (top entry), and FRAMEWORK.md / CONTRIBUTING.md references.
-const VECTOR_VERSION = "V1.9.0";
+const VECTOR_VERSION = "V2.0.0";
 
 // ── Deployment ─────────────────────────────────────────────────
 // Environment detection: use /api/proxy on Vercel, direct API everywhere else
@@ -3210,6 +3210,7 @@ const TuneModal = React.memo(function TuneModal() {
                 ["MHT Study",       showMhtStudy,     ()=>setShowMhtStudy(p=>!p),      "#1E6A8A","Metatron-Hudson Theory SDE"],
                 ["Integrity Floor",  showIntegrityFloor, ()=>setShowIntegrityFloor(p=>!p), "#4828A0","Hydrogen floor integrity detection"],
                 ["Sod's Law",        showSodsLaw,      ()=>setShowSodsLaw(p=>!p),       "#9A5C08","Satirical 2004 Wiseman calculator — not a reliability metric"],
+                ["Semantic Embed", semanticEnabled, ()=>setSemanticEnabled(p=>!p), "#1E6A8A","MiniLM embeddings (~23MB) blended with TF-IDF+JSD"],
               ].map(([label,val,toggle,col,note])=>(
                 <div key={label} style={{display:"flex",alignItems:"center",gap:8,
                   padding:"6px 10px",borderRadius:4,
@@ -3275,6 +3276,29 @@ const TuneModal = React.memo(function TuneModal() {
                     {sodsReport.band.toUpperCase()}
                   </span>
                 </span>
+              </div>
+            </div>
+          )}
+
+          {semanticEnabled&&(
+            <div style={{borderTop:"1px solid #1E6A8A33",paddingTop:12,marginBottom:14,
+              padding:"10px 12px",background:"#ECF4F8",borderRadius:4,border:"1px solid #1E6A8A44"}}>
+              <div style={{fontFamily:"Courier New,monospace",fontSize:9,color:"#1E6A8A",
+                letterSpacing:2,marginBottom:6}}>SEMANTIC EMBEDDINGS (MINILM-L6-V2)</div>
+              <div style={{fontFamily:"Courier New,monospace",fontSize:8,color:"#2E5070",
+                lineHeight:1.4,marginBottom:10}}>
+                Status: <strong>{semanticStatus}</strong>. Blend weight controls how
+                much semantic similarity contributes vs TF-IDF+JSD. 0 = text-metric
+                only, 1 = semantic only, 0.5 = equal weight.
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                <span style={{fontFamily:"Courier New,monospace",fontSize:8,
+                  color:"#1E3C5C",width:90}}>Blend weight</span>
+                <input type="range" min="0" max="1" step="0.05" value={semanticWeight}
+                  onChange={e=>setSemanticWeight(parseFloat(e.target.value))}
+                  style={{flex:1,accentColor:"#1E6A8A"}}/>
+                <span style={{fontFamily:"Courier New,monospace",fontSize:9,
+                  color:"#1E3C5C",width:32,textAlign:"right"}}>{semanticWeight.toFixed(2)}</span>
               </div>
             </div>
           )}
@@ -4800,6 +4824,67 @@ export default function VECTOR() {
   const [hudsonMode,      setHudsonMode]      = useState(null);
   const [showDisclaimer,  setShowDisclaimer]  = useState(true);
   const [sessionId] = useState(()=>`HP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2,6).toUpperCase()}`);
+  // V2.0.0: Semantic embeddings integration. transformers.js + all-MiniLM-L6-v2,
+  // ~23MB ONNX, IndexedDB-cached in browser. Web Worker at /embedder.worker.js.
+  // Feature-flagged: default OFF so existing users unaffected.
+  const [semanticEnabled,    setSemanticEnabled]    = useState(false);
+  const [semanticReady,      setSemanticReady]      = useState(false);
+  const [semanticStatus,     setSemanticStatus]     = useState("disabled");
+  const [semanticWeight,     setSemanticWeight]     = useState(0.5);
+  const [semanticCache,      setSemanticCache]      = useState({});
+  const semanticWorkerRef = useRef(null);
+  const semanticRequestIdRef = useRef(0);
+  const semanticPendingRef = useRef({});
+
+  useEffect(() => {
+    if (!semanticEnabled) {
+      setSemanticStatus("disabled");
+      setSemanticReady(false);
+      if (semanticWorkerRef.current) {
+        try { semanticWorkerRef.current.terminate(); } catch(e){}
+        semanticWorkerRef.current = null;
+      }
+      return;
+    }
+    if (semanticWorkerRef.current) return;
+    if (typeof window === "undefined" || typeof Worker === "undefined") {
+      setSemanticStatus("unsupported");
+      return;
+    }
+    try {
+      setSemanticStatus("loading model...");
+      const w = new Worker("/embedder.worker.js");
+      semanticWorkerRef.current = w;
+      w.onmessage = (e) => {
+        const d = e.data || {};
+        if (d.type === "status") setSemanticStatus(String(d.message || "loading"));
+        else if (d.type === "ready") { setSemanticReady(true); setSemanticStatus("ready"); }
+        else if (d.type === "error") { setSemanticStatus("error: " + (d.message || "unknown")); setSemanticReady(false); }
+        else if (d.type === "result" && d.id != null) {
+          const pend = semanticPendingRef.current[d.id];
+          if (pend) { pend(d.embedding); delete semanticPendingRef.current[d.id]; }
+        }
+      };
+      w.onerror = () => { setSemanticStatus("worker error"); setSemanticReady(false); };
+    } catch (err) { setSemanticStatus("init failed: " + String(err)); }
+  }, [semanticEnabled]);
+
+  const requestEmbedding = useCallback((text) => {
+    return new Promise((resolve, reject) => {
+      const w = semanticWorkerRef.current;
+      if (!w || !semanticReady) { reject(new Error("embedder not ready")); return; }
+      const id = ++semanticRequestIdRef.current;
+      semanticPendingRef.current[id] = resolve;
+      w.postMessage({ type: "embed", text: String(text || "").slice(0, 4000), id });
+      setTimeout(() => {
+        if (semanticPendingRef.current[id]) {
+          delete semanticPendingRef.current[id];
+          reject(new Error("embedding timeout"));
+        }
+      }, 10000);
+    });
+  }, [semanticReady]);
+
   const [tokenEstimate,   setTokenEstimate]   = useState(0);
   const [bookmarks,       setBookmarks]       = useState([]);
   const [showBookmarks,   setShowBookmarks]   = useState(false);
@@ -4911,6 +4996,10 @@ export default function VECTOR() {
   const [autoTuneEnabled,setAutoTuneEnabled]= useState(true);
   const [lastAutoTune,   setLastAutoTune]   = useState(null);
   const [feedbackState,  setFeedbackState]  = useState(()=>loadFeedbackState());
+  // V2.0.0: "Something's off / not grounded" per-turn flags (distinct from thumbs).
+  // Thumbs = style preference. notGroundedFlags = suspected factual/grounding failure.
+  // Persisted to storage under vector:gt:flag:{sessionId}:{turnIndex} on flag click.
+  const [notGroundedFlags, setNotGroundedFlags] = useState({});
   const [msgRatings,     setMsgRatings]     = useState({});
   const [reflexiveResult,setReflexiveResult]= useState(null);
   const [reflexiveLoading,setReflexiveLoading]=useState(false);
@@ -5115,6 +5204,9 @@ export default function VECTOR() {
         if (p.sodsSkill!=null)           setSodsSkill(p.sodsSkill);
         if (p.sodsAggravation!=null)     setSodsAggravation(p.sodsAggravation);
         if (p.sodsFrequency!=null)       setSodsFrequency(p.sodsFrequency);
+        if (p.notGroundedFlags!=null)    setNotGroundedFlags(p.notGroundedFlags);
+        if (p.semanticEnabled!=null)     setSemanticEnabled(p.semanticEnabled);
+        if (p.semanticWeight!=null)      setSemanticWeight(p.semanticWeight);
         if (p.showPoole!=null)           setShowPoole(p.showPoole);
         if (p.showIntegrityFloor!=null)  setShowIntegrityFloor(p.showIntegrityFloor);
         if (p.featIntegrityFloor!=null)  setFeatIntegrityFloor(p.featIntegrityFloor);
@@ -5195,6 +5287,8 @@ export default function VECTOR() {
           advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,
           showMhtStudy,showPoole,caPassRate,
           showSodsLaw,sodsUrgency,sodsComplexity,sodsImportance,sodsSkill,sodsAggravation,sodsFrequency,
+          notGroundedFlags,
+          semanticEnabled, semanticWeight,
           pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
           showIntegrityFloor,featIntegrityFloor,integrityThreshold,
           mhtPsi,mhtKappa,mhtTau,mhtGamma,mhtCap,mhtAlpha,mhtBeta,mhtSigma,
@@ -5217,6 +5311,7 @@ export default function VECTOR() {
      postAuditThresh,showSdePaths,pathOpacity,
      advancedUnlocked,showSdeConfig,showRailsConfig,showConstEditor,showMhtStudy,showPoole,
      showSodsLaw,sodsUrgency,sodsComplexity,sodsImportance,sodsSkill,sodsAggravation,sodsFrequency,
+     notGroundedFlags,semanticEnabled,semanticWeight,
      caPassRate,pooleBirth1,pooleBirth2,pooleSurv1,pooleSurv2,pooleGen,
      showIntegrityFloor,featIntegrityFloor,integrityThreshold,
      mhtPsi,mhtKappa,mhtTau,mhtGamma,mhtCap,mhtAlpha,mhtBeta,mhtSigma,
@@ -7444,6 +7539,37 @@ export default function VECTOR() {
                           opacity:thumbRating!=null&&thumbRating!==v?0.3:0.8}}>{e}</button>
                       ))}
                       {thumbRating&&<span style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#0A7878",alignSelf:"center"}}>{"✓ learned"}</span>}
+                      <button onClick={()=>{
+                        const isOn = !!notGroundedFlags[i];
+                        if (isOn) {
+                          setNotGroundedFlags(f => { const n={...f}; delete n[i]; return n; });
+                        } else {
+                          const now = Date.now();
+                          setNotGroundedFlags(f => ({...f, [i]: {timestamp: now}}));
+                          setEventLog(p=>[...p,{
+                            timestamp: new Date(now).toISOString(), turn: ti+1,
+                            type:"not_grounded_flag",
+                            coherence: cdata ? cdata.raw : null,
+                            note:"User flagged turn as not grounded",
+                          }]);
+                          try {
+                            const key = "vector:gt:flag:" + String(sessionId).replace(/[\s/\\'\"]/g,"_") + ":" + ti;
+                            const payload = JSON.stringify({
+                              sessionId, turnIndex: ti, timestamp: now,
+                              coherenceAtTurn: cdata ? cdata.raw : null,
+                            });
+                            if (typeof window !== "undefined") {
+                              if (window.storage && window.storage.set) window.storage.set(key, payload).catch(()=>{});
+                              else if (window.localStorage) window.localStorage.setItem(key, payload);
+                            }
+                          } catch(e) {}
+                        }
+                      }} title="Something&apos;s off — distinct from thumbs up/down"
+                        style={{padding:"1px 6px",cursor:"pointer",borderRadius:8,fontSize:10,
+                        background:notGroundedFlags[i]?"#9A5C0822":"transparent",
+                        border:notGroundedFlags[i]?"1px solid #9A5C08":"1px solid #1A305060",
+                        color:notGroundedFlags[i]?"#9A5C08":"#2E5070"}}>⚠?</button>
+                      {notGroundedFlags[i]&&<span style={{fontFamily:"Courier New,monospace",fontSize:7,color:"#9A5C08",alignSelf:"center"}}>flagged</span>}
                     </div>
                   )}
                 </div>
@@ -7818,6 +7944,13 @@ export default function VECTOR() {
                     :"—",
                   reliabilityReport&&reliabilityReport.pBinWeighted>0.5
                     ?"#C81030":reliabilityReport&&reliabilityReport.pBinWeighted>0.25?"#9A5C08":"#178040"],
+                // V2.0.0: Semantic embeddings status (normal tier, diagnostic)
+                ["Semantic Mode",
+                  semanticEnabled?(semanticReady?"ON · "+semanticStatus:semanticStatus):"off",
+                  semanticEnabled&&semanticReady?"#178040":semanticEnabled?"#9A5C08":"#607080"],
+                ["Sem Weight",
+                  semanticEnabled?semanticWeight.toFixed(2):"—",
+                  "#4848B8"],
               ].map(([label,val,color])=>(
                 <div key={label} style={S.statRow}>
                   <span style={S.statLabel}>{label}</span>

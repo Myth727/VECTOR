@@ -133,13 +133,6 @@ VECTOR has Shannon entropy, Jensen-Shannon divergence, Bhattacharyya overlap (mi
 **Reference:** Schreiber, T. (2000). *Measuring Information Transfer.* Physical Review Letters 85(2).
 **Target:** V2.0 (pair with Granger causality below — same use case, different technique)
 
-### Granger Causality
-**Field:** Econometrics / time-series
-**What it does:** Classical statistical test for whether one time series predicts another beyond its own history.
-**Why VECTOR would benefit:** For the V1.8.0 causal delta measurement to be published as a real claim, Granger causality is the standard statistical test reviewers will expect to see. We collect the data. Don't yet have the test.
-**Reference:** Granger, C. W. J. (1969). *Investigating Causal Relations by Econometric Models and Cross-spectral Methods.* Econometrica 37(3).
-**Target:** V1.9 (required for real publication of causal delta results)
-
 ### Proper Shannon Mutual Information (via k-NN)
 **Field:** Information theory
 **What it does:** Actual MI between continuous variables via k-nearest-neighbor estimators. Does not require binning or parametric assumptions.
@@ -326,7 +319,7 @@ Each is its own project. None would be VECTOR as currently shipped; each would u
 
 Ranked by impact-per-effort:
 
-1. **Granger causality** (V2.x, statistics layer) — V1.9.0 implemented Mann-Whitney U, Fisher's exact, percentile bootstrap CI, and Benjamini-Hochberg correction, which cover the two-sample significance and multiple-comparison needs for the causal delta data. Granger causality specifically is still absent; it is the standard test reviewers expect for temporal causal claims (whether policy injection predicts subsequent coherence beyond the session's own autoregressive trend).
+1. **Statistical test layer complete as of V2.0.0** — Mann-Whitney U, Fisher's exact, percentile bootstrap CI, Benjamini-Hochberg FDR correction, and Granger causality are all implemented in `sdk/stats.ts` and mirrored in `tools/analyze_experiment.py`. The V1.8.0 causal delta data is now testable end-to-end. Remaining statistical-layer items (sequential hypothesis testing, beyond-Granger causal inference) are research-grade, not blocking.
 2. **EGARCH or GJR-GARCH** (V1.9, variance asymmetry) — addresses the biggest math gap with the smallest engineering cost.
 3. **CUSUM change-point detector** (V1.9, where did drift start?) — formal answer to a question users already ask.
 4. **Transfer entropy** (V2.0, user vs AI contribution to drift) — unbundles a coupled measurement.

@@ -6,7 +6,7 @@
 
 © 2026 Hudson & Perry Research  
 **Authors:** David Hudson ([@RaccoonStampede](https://x.com/RaccoonStampede)) · David Perry ([@Prosperous727](https://x.com/Prosperous727))  
-**Version:** V1.9.0 · **License:** MIT · [Live Demo](https://vector2026.vercel.app/)
+**Version:** V2.0.0 · **License:** MIT · [Live Demo](https://vector2026.vercel.app/)
 
 > ⚠ RESEARCH & DEVELOPMENT — NOT FOR CLINICAL OR LEGAL USE.  
 > All outputs are mathematical proxy indicators. No warranty expressed or implied.
